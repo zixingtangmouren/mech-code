@@ -1,0 +1,29 @@
+{
+  "name": "@mech/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "mech": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mech/core": "workspace:*",
+    "@mech/shared": "workspace:*",
+    "chalk": "^5.0.0",
+    "commander": "^12.0.0",
+    "ink": "^4.4.1",
+    "ora": "^8.0.0",
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "ink-testing-library": "^3.0.0"
+  }
+}

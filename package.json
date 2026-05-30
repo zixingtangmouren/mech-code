@@ -1,0 +1,47 @@
+{
+  "name": "mech-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Claude Code like terminal CLI powered by LLM",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "lint": "eslint packages/",
+    "lint:fix": "eslint packages/ --fix",
+    "format": "prettier --write packages/",
+    "format:check": "prettier --check packages/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "pnpm -r run typecheck",
+    "prepare": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged",
+    "commit-msg": "npx --no-install commitlint --edit $1"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^2.0.0",
+    "eslint": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "prettier": "^3.0.0",
+    "simple-git-hooks": "^2.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.0.0"
+  }
+}
