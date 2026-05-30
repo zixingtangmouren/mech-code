@@ -1,6 +1,8 @@
 // Agent 模块
 export { Agent, createAgent } from './agent/agent.js'
-export type { RunParams, RunResult } from './agent/types.js'
+export type { AgentConfig } from './agent/agent.js'
+export type { RunParams, RunResult, AgentState, AgentMessage } from './agent/types.js'
+export { createAgentState } from './agent/types.js'
 
 // Provider 模块
 export type {
@@ -39,7 +41,17 @@ export {
 } from './message/tokenizer.js'
 
 // 中间件
-export type { AgentMiddleware, MiddlewareContext, ToolExecContext } from './middleware/types.js'
+export type {
+  AgentMiddleware,
+  RunContext,
+  ToolExecContext,
+  LLMCallFn,
+  ToolExecFn,
+  Awaitable,
+  // 向后兼容别名
+  MiddlewareContext,
+} from './middleware/types.js'
+export { MiddlewarePipeline } from './middleware/pipeline.js'
 
 // 工具协议
 export type {
