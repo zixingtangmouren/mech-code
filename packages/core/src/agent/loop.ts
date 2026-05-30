@@ -208,7 +208,7 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
           system: callCtx.system || undefined,
           tools: callCtx.tools.length > 0 ? callCtx.tools : undefined,
         })
-        return provider.stream(chatParams, { signal: callCtx.signal })
+        return Promise.resolve(provider.stream(chatParams, { signal: callCtx.signal }))
       }
 
       const wrappedLLMCall = pipeline.buildLLMCallChain(baseLLMCall)

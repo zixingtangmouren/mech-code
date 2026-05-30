@@ -8,6 +8,8 @@ type OpenAIChunk = {
     index: number
     delta: {
       content?: string | null
+      /** DeepSeek Reasoner 扩展字段：思考链文本 */
+      reasoning_content?: string | null
       role?: string
       tool_calls?: Array<{
         index: number
@@ -39,6 +41,8 @@ type ToolCallState = {
 export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
   private textStarted = false
   private textAccumulated = ''
+  private reasoningStarted = false
+  private reasoningAccumulated = ''
   private inputTokens = 0
   private outputTokens = 0
   private stopReason = 'end_turn'
@@ -61,6 +65,16 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
     }
 
     const delta = choice.delta
+
+    // 思考链内容（DeepSeek Reasoner 等）
+    if (delta.reasoning_content) {
+      if (!this.reasoningStarted) {
+        this.reasoningStarted = true
+        events.push({ type: 'reasoning_start' })
+      }
+      this.reasoningAccumulated += delta.reasoning_content
+      events.push({ type: 'reasoning_content', text: delta.reasoning_content })
+    }
 
     // 文本内容
     if (delta.content) {
@@ -115,6 +129,11 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
 
   flush(): AgentEvent[] {
     const events: AgentEvent[] = []
+
+    // 关闭思考链块
+    if (this.reasoningStarted) {
+      events.push({ type: 'reasoning_end', fullText: this.reasoningAccumulated })
+    }
 
     // 关闭文本块
     if (this.textStarted) {

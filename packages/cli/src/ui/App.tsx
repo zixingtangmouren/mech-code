@@ -1,13 +1,11 @@
-import { Box, Text } from 'ink'
 import React from 'react'
+import type { Agent } from '@mech/core'
+import { Session } from './components/Session.js'
 
-export function App(): React.ReactElement {
-  return (
-    <Box flexDirection="column" padding={1}>
-      <Text bold color="cyan">
-        mech-code
-      </Text>
-      <Text color="gray">Interactive AI assistant. Type your message to begin.</Text>
-    </Box>
-  )
+interface AppProps {
+  agent: Agent
+}
+
+export function App({ agent }: AppProps): React.ReactElement {
+  return <Session agent={agent} />
 }
