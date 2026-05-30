@@ -1,4 +1,4 @@
-import type { ProviderConfig } from '@mech/shared'
+import type { ProviderConfig } from '@mech/core'
 
 export interface MechConfig {
   default?: string

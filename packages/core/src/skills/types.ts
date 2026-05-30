@@ -1,4 +1,5 @@
-import type { Tool, AgentMiddleware } from '@mech/shared'
+import type { Tool } from '../tools/types.js'
+import type { AgentMiddleware } from '../middleware/types.js'
 import type { MiddlewareContext } from '../middleware/types.js'
 import type { RunResult } from '../agent/types.js'
 

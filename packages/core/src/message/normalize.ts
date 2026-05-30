@@ -25,6 +25,9 @@ export function normalizeMessage(msg: Message): InternalMessage {
         content:
           typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : msg.content,
       }
+
+    default:
+      throw new Error(`未知的消息角色: ${(msg as { role: string }).role}`)
   }
 }
 
