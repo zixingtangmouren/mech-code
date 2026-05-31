@@ -11,7 +11,11 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "example": "tsx examples/basic-agent.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
   },
   "dependencies": {
     "@mech/shared": "workspace:*",

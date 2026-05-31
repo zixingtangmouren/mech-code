@@ -42,6 +42,7 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
   private textStarted = false
   private textAccumulated = ''
   private reasoningStarted = false
+  private reasoningEnded = false
   private reasoningAccumulated = ''
   private inputTokens = 0
   private outputTokens = 0
@@ -78,6 +79,11 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
 
     // 文本内容
     if (delta.content) {
+      // 思考结束 → 文本开始：先关闭思考块
+      if (this.reasoningStarted && !this.reasoningEnded) {
+        this.reasoningEnded = true
+        events.push({ type: 'reasoning_end', fullText: this.reasoningAccumulated })
+      }
       if (!this.textStarted) {
         this.textStarted = true
         events.push({ type: 'text_start' })
@@ -88,12 +94,18 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
 
     // 工具调用
     if (delta.tool_calls) {
+      // 思考结束 → 工具调用开始：先关闭思考块
+      if (this.reasoningStarted && !this.reasoningEnded) {
+        this.reasoningEnded = true
+        events.push({ type: 'reasoning_end', fullText: this.reasoningAccumulated })
+      }
       for (const tc of delta.tool_calls) {
         let state = this.toolCalls.get(tc.index)
         if (!state) {
+          // id/name 初始化为空，统一由下方的累积逻辑写入，避免重复追加
           state = {
-            id: tc.id ?? '',
-            name: tc.function?.name ?? '',
+            id: '',
+            name: '',
             argumentsAccumulated: '',
             emittedStart: false,
           }
@@ -130,8 +142,8 @@ export class OpenAIStreamNormalizer implements StreamNormalizer<OpenAIChunk> {
   flush(): AgentEvent[] {
     const events: AgentEvent[] = []
 
-    // 关闭思考链块
-    if (this.reasoningStarted) {
+    // 关闭思考链块（未在 push 阶段提前关闭时才补发）
+    if (this.reasoningStarted && !this.reasoningEnded) {
       events.push({ type: 'reasoning_end', fullText: this.reasoningAccumulated })
     }
 

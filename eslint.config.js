@@ -6,7 +6,10 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['packages/*/examples/*.ts'],
+          defaultProject: 'tsconfig.json',
+        },
       },
     },
     rules: {
@@ -21,6 +24,13 @@ export default tseslint.config(
     files: ['**/__tests__/**/*.ts', '**/*.test.ts'],
     rules: {
       '@typescript-eslint/require-await': 'off',
+    },
+  },
+  {
+    files: ['**/examples/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-implied-eval': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
     },
   },
 )

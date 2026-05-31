@@ -76,9 +76,10 @@ type ToolBatchResult =
 
 /**
  * 执行一批工具调用，统一处理 SuspendSignal 和 AbortSignal 中断。
- * 返回完成结果或中断事件（suspended）。
+ * 以 AsyncGenerator 形式 yield tool_executing / tool_result 事件，
+ * 最终 return 完成结果或中断事件（suspended）。
  */
-async function executeToolBatch(
+async function* executeToolBatch(
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
   ctx: RunContext,
   toolMap: Map<string, Tool>,
@@ -86,7 +87,7 @@ async function executeToolBatch(
   state: AgentState,
   signal: AbortSignal,
   turnIndex: number,
-): Promise<ToolBatchResult> {
+): AsyncGenerator<AgentEvent, ToolBatchResult, unknown> {
   const parallelCalls = toolCalls.filter((c) => toolMap.get(c.name)?.flags.parallelSafe)
   const sequentialCalls = toolCalls.filter((c) => !toolMap.get(c.name)?.flags.parallelSafe)
 
@@ -120,6 +121,10 @@ async function executeToolBatch(
 
   // ---- 并行工具执行 ----
   if (parallelCalls.length > 0) {
+    // 并行工具：先发出所有 tool_executing 事件
+    for (const call of parallelCalls) {
+      yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
+    }
     try {
       const results = await Promise.all(
         parallelCalls.map(async (call) => {
@@ -130,11 +135,18 @@ async function executeToolBatch(
             toolInput: call.input,
           }
           const output = await wrappedToolCall(toolCtx)
-          return { toolCallId: call.id, output }
+          return { toolCallId: call.id, toolName: call.name, output }
         }),
       )
       for (const r of results) {
         completedResults.set(r.toolCallId, r.output)
+        yield {
+          type: 'tool_result',
+          toolCallId: r.toolCallId,
+          toolName: r.toolName,
+          output: r.output.content,
+          isError: r.output.isError ?? false,
+        }
       }
     } catch (err) {
       // 并行批次中断：整批（parallel + sequential）作为 pending
@@ -165,6 +177,8 @@ async function executeToolBatch(
       return { status: 'suspended', event: makeSuspendedEvent(pending, getAbortReason(signal)) }
     }
 
+    yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
+
     try {
       const toolCtx: ToolCallContext = {
         ...ctx,
@@ -174,6 +188,13 @@ async function executeToolBatch(
       }
       const output = await wrappedToolCall(toolCtx)
       completedResults.set(call.id, output)
+      yield {
+        type: 'tool_result',
+        toolCallId: call.id,
+        toolName: call.name,
+        output: output.content,
+        isError: output.isError ?? false,
+      }
     } catch (err) {
       // 当前及后续工具作为 pending
       const pending = sequentialCalls.slice(i)
@@ -273,7 +294,7 @@ async function* runMainLoop(
     }
 
     // ---- TOOL CALL 阶段 ----
-    const batchResult = await executeToolBatch(
+    const batchResult: ToolBatchResult = yield* executeToolBatch(
       toolCalls,
       ctx,
       toolMap,

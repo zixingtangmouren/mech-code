@@ -135,6 +135,7 @@ export class OpenAISerializer implements MessageSerializer<OpenAIRequest> {
         function: { name: b.name, arguments: JSON.stringify(b.input) },
       }))
 
+    // thinking 块无需回传给 OpenAI/DeepSeek API（模型不接受 reasoning 回传）
     const textContent = blocks
       .filter((b): b is Extract<AssistantContentBlock, { type: 'text' }> => b.type === 'text')
       .map((b) => b.text)

@@ -19,7 +19,7 @@ export type ToolInit = {
   description: string
   inputSchema: Record<string, unknown>
   flags: ToolFlags
-  execute(input: Record<string, unknown>, context: ToolRunContext): Promise<ToolOutput>
+  execute(input: Record<string, unknown>, context: ToolRunContext): Promise<ToolOutput> | ToolOutput
   getPrompt?(context: ToolPromptContext): string | null
   validateInput?(input: Record<string, unknown>): ValidationResult | Promise<ValidationResult>
 }
@@ -38,7 +38,7 @@ export type ToolZodInit<TSchema extends z.ZodTypeAny> = {
   /** Zod schema，同时用于：生成 JSON Schema 发给 LLM + 运行时输入校验 */
   schema: TSchema
   flags: ToolFlags
-  execute(input: z.infer<TSchema>, context: ToolRunContext): Promise<ToolOutput>
+  execute(input: z.infer<TSchema>, context: ToolRunContext): Promise<ToolOutput> | ToolOutput
   getPrompt?(context: ToolPromptContext): string | null
   /** 额外的业务约束校验（在 Zod 校验通过之后执行） */
   validateInput?(input: z.infer<TSchema>): ValidationResult | Promise<ValidationResult>

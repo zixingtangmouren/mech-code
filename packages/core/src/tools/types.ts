@@ -103,7 +103,7 @@ export interface Tool {
   /**
    * 执行实现
    */
-  execute(input: Record<string, unknown>, context: ToolRunContext): Promise<ToolOutput>
+  execute(input: Record<string, unknown>, context: ToolRunContext): Promise<ToolOutput> | ToolOutput
 
   /**
    * 导出为 LLM 可理解的精简定义。
