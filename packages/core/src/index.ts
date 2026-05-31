@@ -85,6 +85,7 @@ export {
   writeFileTool,
   listDirTool,
   editFileTool,
+  bashTool,
   getBuiltinTools,
 } from './tools/builtins/index.js'
 
