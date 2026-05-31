@@ -231,32 +231,55 @@ clearTools() // Clear the registry (useful in tests)
 
 ## Middleware
 
-Middleware extends Agent behavior in a pluggable way — handling retry, rate-limiting, permissions, logging, and other cross-cutting concerns without touching core logic.
+Middleware extends Agent behavior in a pluggable way — handling retry, rate-limiting, permissions, logging, and other cross-cutting concerns without touching core logic. Two integration modes:
 
-Middleware extends Agent behavior in two integration modes:
+- **Hook mode** — read and write Context state (logging, context compression, token counting)
+- **Wrap mode** — wrap a core operation (retry, caching, circuit breaker, permission gate)
 
-- **Hook mode** — observe and modify data (logging, context compression, token counting)
-- **Wrap mode** — wrap a core operation (retry, caching, circuit breaker)
+Responsibility boundary: **hooks only read/write state; wraps only wrap behavior** — never mixed.
 
 ### Interface
 
 ```ts
 interface AgentMiddleware {
   name: string
+  /** Public state: auto-synced to AgentState.middlewareStates; readable by other middleware */
+  state?: Record<string, unknown>
 
-  // === Hook mode (observe + modify context data) ===
-  onRunStart?(ctx: RunContext): Awaitable<void>
-  onTurnEnd?(ctx: RunContext): Awaitable<void>
-  onRunEnd?(ctx: RunContext): Awaitable<void> // runs even on error (like finally)
+  // === Hook mode: observe and modify state ===
+  beforeAgent?(ctx: RunContext): Awaitable<void> // run start — initialize
+  afterAgent?(ctx: RunContext): Awaitable<void> // run end — like finally
+  beforeModel?(ctx: RunContext): Awaitable<void> // modify callMessages / system / tools
+  afterModel?(ctx: RunContext): Awaitable<void> // observe model output, update stats
 
-  beforeLLMCall?(ctx: RunContext): Awaitable<void> // modify callMessages / system / tools
-  afterLLMResponse?(ctx: RunContext): Awaitable<void> // inspect or intercept response
-  beforeToolExec?(ctx: ToolExecContext): Awaitable<void> // validate, check permissions
-  afterToolExec?(ctx: ToolExecContext): Awaitable<void> // truncate or transform results
+  // === Wrap mode: wrap the core operation ===
+  wrapModelCall?(next: ModelCallFn, ctx: RunContext): Awaitable<StreamResult>
+  wrapToolCall?(next: ToolCallFn, ctx: ToolCallContext): Awaitable<ToolOutput>
+}
+```
 
-  // === Wrap mode (wrap the core operation — retry, cache, rate-limit) ===
-  wrapLLMCall?(next: LLMCallFn, ctx: RunContext): Awaitable<StreamResult>
-  wrapToolExec?(next: ToolExecFn, ctx: ToolExecContext): Awaitable<ToolOutput>
+For stateful middleware, extend the `Middleware` base class:
+
+```ts
+import { Middleware } from '@mech/core'
+
+class TokenCounterMiddleware extends Middleware {
+  name = 'token-counter'
+
+  // Public state: auto-synced to AgentState, readable by other middleware
+  state = { totalInputTokens: 0, totalOutputTokens: 0 }
+
+  // Private state: only visible to this instance
+  private threshold = 100_000
+
+  afterModel(ctx: RunContext) {
+    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
+    this.state.totalInputTokens += inputTokens
+    this.state.totalOutputTokens += outputTokens
+    if (this.state.totalInputTokens > this.threshold) {
+      console.warn('Total input tokens exceeded threshold')
+    }
+  }
 }
 ```
 
@@ -265,16 +288,16 @@ interface AgentMiddleware {
 ```ts
 interface RunContext {
   state: AgentState // full conversation state (mutable reference)
-  callMessages: Message[] // snapshot sent to LLM this turn (middleware can rewrite)
-  system: string // system prompt sent this turn (middleware can append)
-  tools: ToolDefinition[] // tools sent this turn (middleware can filter)
-  lastResponse?: ChatResponse // available in afterLLMResponse
+  callMessages: Message[] // snapshot sent to the model this turn (beforeModel can rewrite)
+  system: string // system prompt this turn (beforeModel can append)
+  tools: ToolDefinition[] // tools this turn (beforeModel can filter)
+  lastResponse?: ChatResponse // available in afterModel (read-only observation point)
   readonly turnIndex: number
   readonly signal: AbortSignal
 }
 ```
 
-`state` is the persistent truth — mutations here survive across turns. `callMessages` is a per-turn projection — mutations only affect the current LLM call.
+`state` is the persistent truth — mutations here survive across turns. `callMessages` is a per-turn projection — mutations only affect the current model call. `lastResponse` in `afterModel` is read-only: model output should not be modified after streaming.
 
 ### Example: logger middleware (Hook mode)
 
@@ -283,10 +306,10 @@ import type { AgentMiddleware } from '@mech/core'
 
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
-  beforeLLMCall(ctx) {
+  beforeModel(ctx) {
     console.log(`[Turn ${ctx.turnIndex}] Sending ${ctx.callMessages.length} messages`)
   },
-  afterLLMResponse(ctx) {
+  afterModel(ctx) {
     const { inputTokens, outputTokens } = ctx.lastResponse!.usage
     console.log(`[Turn ${ctx.turnIndex}] Tokens: ${inputTokens} in / ${outputTokens} out`)
   },
@@ -298,7 +321,7 @@ const loggerMiddleware: AgentMiddleware = {
 ```ts
 const retryMiddleware: AgentMiddleware = {
   name: 'retry',
-  async wrapLLMCall(next, ctx) {
+  async wrapModelCall(next, ctx) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await next(ctx)
@@ -317,7 +340,7 @@ const retryMiddleware: AgentMiddleware = {
 ```ts
 const permissionMiddleware: AgentMiddleware = {
   name: 'permission',
-  async wrapToolExec(next, ctx) {
+  async wrapToolCall(next, ctx) {
     const tool = getTool(ctx.toolName)
     if (!tool?.flags.readonly) {
       const ok = await askUser(`Allow "${ctx.toolName}"?`)
@@ -334,7 +357,7 @@ const permissionMiddleware: AgentMiddleware = {
 const agent = createAgent({
   provider,
   tools: [searchTool, readFileTool],
-  middleware: [retryMiddleware, loggerMiddleware, permissionMiddleware],
+  middleware: [new TokenCounterMiddleware(), retryMiddleware, permissionMiddleware],
 })
 
 // Or attach after construction
@@ -420,7 +443,7 @@ Agent state is held externally and passed into every `run()` call. The Agent mut
 
 ```ts
 const state = createAgentState()
-// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map() }
+// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map(), middlewareStates: {} }
 
 // First turn
 state.messages.push({ role: 'user', content: 'List the files in src/' })
@@ -460,8 +483,9 @@ const summaryAgent = mainAgent.fork({
 | `createAgentState`                         | Create an empty `AgentState`                   |
 | `AgentState` / `AgentMessage`              | Session state types                            |
 | `RunParams` / `RunResult`                  | Agent run input and output types               |
-| `RunContext` / `ToolExecContext`           | Middleware context types                       |
-| `LLMCallFn` / `ToolExecFn` / `Awaitable`   | Wrap-mode middleware function types            |
+| `RunContext` / `ToolCallContext`           | Middleware context types                       |
+| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap-mode middleware function types            |
+| `Middleware`                               | Stateful middleware base class                 |
 | `MiddlewarePipeline`                       | Pipeline executor (advanced use)               |
 | `AnthropicProvider`                        | Anthropic provider                             |
 | `OpenAIProvider`                           | OpenAI provider                                |

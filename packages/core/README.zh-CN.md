@@ -231,32 +231,55 @@ clearTools() // 清空注册表（测试时使用）
 
 ## 中间件
 
-中间件以可插拔方式扩展 Agent 行为，处理重试、限流、权限、日志等横切逻辑，不侵入核心代码。
+中间件以可插拔方式扩展 Agent 行为，处理重试、限流、权限、日志等横切逻辑，不侵入核心代码。支持两种模式：
 
-中间件以可插拔方式扩展 Agent 行为，支持两种集成模式：
+- **Hook 模式** —— 读写 Context 状态（日志、上下文压缩、token 计量）
+- **Wrap 模式** —— 包裹核心操作（重试、缓存、熔断、权限拦截）
 
-- **Hook 模式** —— 观察和修改数据（日志、上下文压缩、token 计量）
-- **Wrap 模式** —— 包裹核心操作（重试、缓存、熔断）
+职责边界：**Hook 只做状态读写，Wrap 只做行为包裹**，不混合。
 
 ### 中间件接口
 
 ```ts
 interface AgentMiddleware {
   name: string
+  /** 公有状态：自动同步到 AgentState.middlewareStates，其他中间件可读，支持持久化 */
+  state?: Record<string, unknown>
 
-  // === Hook 式（观察 + 修改 Context 数据）===
-  onRunStart?(ctx: RunContext): Awaitable<void>
-  onTurnEnd?(ctx: RunContext): Awaitable<void>
-  onRunEnd?(ctx: RunContext): Awaitable<void> // 类似 finally，即使出错也执行
+  // === Hook 模式：状态观察与修改 ===
+  beforeAgent?(ctx: RunContext): Awaitable<void> // run 开始，做初始化
+  afterAgent?(ctx: RunContext): Awaitable<void> // run 结束，类似 finally
+  beforeModel?(ctx: RunContext): Awaitable<void> // 修改 callMessages / system / tools
+  afterModel?(ctx: RunContext): Awaitable<void> // 观察模型输出，更新统计
 
-  beforeLLMCall?(ctx: RunContext): Awaitable<void> // 修改 callMessages / system / tools
-  afterLLMResponse?(ctx: RunContext): Awaitable<void> // 检查或拦截响应
-  beforeToolExec?(ctx: ToolExecContext): Awaitable<void> // 校验输入、权限检查
-  afterToolExec?(ctx: ToolExecContext): Awaitable<void> // 截断或格式化结果
+  // === Wrap 模式：包裹核心操作 ===
+  wrapModelCall?(next: ModelCallFn, ctx: RunContext): Awaitable<StreamResult>
+  wrapToolCall?(next: ToolCallFn, ctx: ToolCallContext): Awaitable<ToolOutput>
+}
+```
 
-  // === Wrap 式（包裹核心操作，适合重试、缓存、限流）===
-  wrapLLMCall?(next: LLMCallFn, ctx: RunContext): Awaitable<StreamResult>
-  wrapToolExec?(next: ToolExecFn, ctx: ToolExecContext): Awaitable<ToolOutput>
+对于有状态的中间件，推荐继承 `Middleware` 基类：
+
+```ts
+import { Middleware } from '@mech/core'
+
+class TokenCounterMiddleware extends Middleware {
+  name = 'token-counter'
+
+  // 公有状态：自动同步到 AgentState，其他中间件可读
+  state = { totalInputTokens: 0, totalOutputTokens: 0 }
+
+  // 私有状态：仅自身可见
+  private threshold = 100_000
+
+  afterModel(ctx: RunContext) {
+    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
+    this.state.totalInputTokens += inputTokens
+    this.state.totalOutputTokens += outputTokens
+    if (this.state.totalInputTokens > this.threshold) {
+      console.warn('累计 input token 已超过阈值')
+    }
+  }
 }
 ```
 
@@ -265,16 +288,16 @@ interface AgentMiddleware {
 ```ts
 interface RunContext {
   state: AgentState // 完整会话状态（可变引用，修改会持久化）
-  callMessages: Message[] // 本轮发给 LLM 的消息快照（中间件可改写）
-  system: string // 本轮 system prompt（中间件可追加）
-  tools: ToolDefinition[] // 本轮工具列表（中间件可动态增减）
-  lastResponse?: ChatResponse // afterLLMResponse 阶段可读
+  callMessages: Message[] // 本轮发给模型的消息快照（beforeModel 可改写）
+  system: string // 本轮 system prompt（beforeModel 可追加）
+  tools: ToolDefinition[] // 本轮工具列表（beforeModel 可动态增减）
+  lastResponse?: ChatResponse // afterModel 阶段可读（只读观察点）
   readonly turnIndex: number
   readonly signal: AbortSignal
 }
 ```
 
-`state` 是持久化的唯一真相，对其的修改跨轮次保留。`callMessages` 是每轮的临时投影，中间件修改只影响本次 LLM 调用。
+`state` 是持久化的唯一真相，对其的修改跨轮次保留。`callMessages` 是每轮的临时投影，中间件修改只影响本次模型调用，不污染历史记录。`afterModel` 中的 `lastResponse` 是只读观察点，不应修改模型输出内容。
 
 ### 示例：日志中间件（Hook 模式）
 
@@ -283,10 +306,10 @@ import type { AgentMiddleware } from '@mech/core'
 
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
-  beforeLLMCall(ctx) {
+  beforeModel(ctx) {
     console.log(`[Turn ${ctx.turnIndex}] 发送 ${ctx.callMessages.length} 条消息`)
   },
-  afterLLMResponse(ctx) {
+  afterModel(ctx) {
     const { inputTokens, outputTokens } = ctx.lastResponse!.usage
     console.log(`[Turn ${ctx.turnIndex}] token: ${inputTokens} in / ${outputTokens} out`)
   },
@@ -298,7 +321,7 @@ const loggerMiddleware: AgentMiddleware = {
 ```ts
 const retryMiddleware: AgentMiddleware = {
   name: 'retry',
-  async wrapLLMCall(next, ctx) {
+  async wrapModelCall(next, ctx) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await next(ctx)
@@ -317,7 +340,7 @@ const retryMiddleware: AgentMiddleware = {
 ```ts
 const permissionMiddleware: AgentMiddleware = {
   name: 'permission',
-  async wrapToolExec(next, ctx) {
+  async wrapToolCall(next, ctx) {
     const tool = getTool(ctx.toolName)
     // 只读工具自动放行，写操作工具需要用户确认
     if (!tool?.flags.readonly) {
@@ -335,7 +358,7 @@ const permissionMiddleware: AgentMiddleware = {
 const agent = createAgent({
   provider,
   tools: [searchTool, readFileTool],
-  middleware: [retryMiddleware, loggerMiddleware, permissionMiddleware],
+  middleware: [new TokenCounterMiddleware(), retryMiddleware, permissionMiddleware],
 })
 
 // 或在创建后动态追加
@@ -421,7 +444,7 @@ Agent 会话状态由调用方持有并传入每次 `run()`。Agent 在执行过
 
 ```ts
 const state = createAgentState()
-// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map() }
+// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map(), middlewareStates: {} }
 
 // 第一轮对话
 state.messages.push({ role: 'user', content: '列出 src/ 下的文件' })
@@ -461,8 +484,9 @@ const summaryAgent = mainAgent.fork({
 | `createAgentState`                         | 创建空的 `AgentState`                    |
 | `AgentState` / `AgentMessage`              | 会话状态类型                             |
 | `RunParams` / `RunResult`                  | Agent 运行参数与结果                     |
-| `RunContext` / `ToolExecContext`           | 中间件上下文类型                         |
-| `LLMCallFn` / `ToolExecFn` / `Awaitable`   | Wrap 模式中间件函数类型                  |
+| `RunContext` / `ToolCallContext`           | 中间件上下文类型                         |
+| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap 模式中间件函数类型                  |
+| `Middleware`                               | 有状态中间件基类                         |
 | `MiddlewarePipeline`                       | 管道执行器（进阶使用）                   |
 | `AnthropicProvider`                        | Anthropic Provider                       |
 | `OpenAIProvider`                           | OpenAI Provider                          |
