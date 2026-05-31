@@ -44,13 +44,12 @@ export {
 export type {
   AgentMiddleware,
   RunContext,
-  ToolExecContext,
-  LLMCallFn,
-  ToolExecFn,
+  ToolCallContext,
+  ModelCallFn,
+  ToolCallFn,
   Awaitable,
-  // 向后兼容别名
-  MiddlewareContext,
 } from './middleware/types.js'
+export { Middleware } from './middleware/types.js'
 export { MiddlewarePipeline } from './middleware/pipeline.js'
 
 // 工具协议

@@ -16,12 +16,12 @@ export type AgentMessage = Message & {
 export interface AgentState {
   /** 完整消息历史（只增不减，压缩时仅打 _compressed 标记） */
   messages: AgentMessage[]
-  /** 被压缩消息的摘要文本（由摘要中间件维护） */
-  summary?: string
   /** 累计 token 用量（跨多次 run() 累加） */
   usage: Usage
   /** 中间件/工具自由读写的键值对 */
   metadata: Map<string, unknown>
+  /** 各中间件的公有状态（按中间件 name 索引，支持序列化持久化） */
+  middlewareStates: Record<string, Record<string, unknown>>
 }
 
 /** 创建一个空的 AgentState，方便业务层初始化 */
@@ -30,6 +30,7 @@ export function createAgentState(): AgentState {
     messages: [],
     usage: { inputTokens: 0, outputTokens: 0 },
     metadata: new Map(),
+    middlewareStates: {},
   }
 }
 

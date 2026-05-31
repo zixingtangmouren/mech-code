@@ -1,6 +1,6 @@
 import type { AgentEvent, AssistantContentBlock } from '@mech/shared'
 import type { AgentState, RunParams, RunResult } from './types.js'
-import type { RunContext, ToolExecContext, LLMCallFn, ToolExecFn } from '../middleware/types.js'
+import type { RunContext, ToolCallContext, ModelCallFn, ToolCallFn } from '../middleware/types.js'
 import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
 import type { Tool, ToolOutput } from '../tools/types.js'
 import type { ToolDefinition } from '@mech/shared'
@@ -50,48 +50,23 @@ function accumulateUsage(
 }
 
 /**
- * 执行单个工具调用（含中间件 Hook + Wrap 链）。
- * 返回工具输出，并在 ctx.toolResult 上设置结果（供 afterToolExec 读取）。
+ * 执行单个工具调用（含中间件 Wrap 链）。
  */
 async function executeToolCall(
   call: { id: string; name: string; input: Record<string, unknown> },
   runCtx: RunContext,
   toolMap: Map<string, Tool>,
-  pipeline: MiddlewarePipeline,
-  wrappedToolExec: ToolExecFn,
-  _cwd: string,
+  wrappedToolCall: ToolCallFn,
 ): Promise<{ toolCallId: string; output: ToolOutput }> {
-  // 构建 ToolExecContext
-  const toolCtx: ToolExecContext = {
+  const toolCtx: ToolCallContext = {
     ...runCtx,
     toolCallId: call.id,
     toolName: call.name,
     toolInput: call.input,
-    toolResult: undefined,
-    skipExecution: false,
-    overrideResult: undefined,
   }
 
-  // beforeToolExec hooks（某个中间件设置 skipExecution 后链会中断）
-  await pipeline.runBeforeToolExec(toolCtx)
-
-  let output: ToolOutput
-
-  if (toolCtx.skipExecution) {
-    // 中间件要求跳过执行（如权限拒绝）
-    output = toolCtx.overrideResult ?? { content: '工具执行已被跳过', isError: true }
-  } else {
-    output = await wrappedToolExec(toolCtx)
-  }
-
-  // 回写 toolResult 供 afterToolExec 读取
-  toolCtx.toolResult = output
-
-  // afterToolExec hooks
-  await pipeline.runAfterToolExec(toolCtx)
-
-  // 若中间件在 afterToolExec 中修改了 toolResult，使用修改后的结果
-  return { toolCallId: call.id, output: toolCtx.toolResult ?? output }
+  const output = await wrappedToolCall(toolCtx)
+  return { toolCallId: call.id, output }
 }
 
 /**
@@ -123,7 +98,6 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
 
   const pipeline = new MiddlewarePipeline(middleware)
   const toolMap = new Map(tools.map((t) => [t.name, t]))
-
   // 记录 run 开始时的 usage，用于计算本次增量
   const usageAtStart = { ...state.usage }
 
@@ -150,8 +124,8 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
 
   const ctx = makeContext()
 
-  // 构建 baseFn（工具执行，不含中间件）
-  const baseToolExec: ToolExecFn = async (toolCtx) => {
+  // 构建 baseToolCall（工具执行，不含中间件）
+  const baseToolCall: ToolCallFn = async (toolCtx) => {
     const tool = toolMap.get(toolCtx.toolName)
     if (!tool) {
       return { content: `工具 "${toolCtx.toolName}" 不存在`, isError: true }
@@ -170,14 +144,27 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     })
   }
 
-  const wrappedToolExec = pipeline.buildToolExecChain(baseToolExec)
+  const wrappedToolCall = pipeline.buildToolCallChain(baseToolCall)
+
+  // baseModelCall：将投影字段传给 Provider（在循环外定义，Wrap 链只构建一次）
+  const baseModelCall: ModelCallFn = (callCtx) => {
+    const internalMessages = normalizeMessages(callCtx.callMessages)
+    const chatParams = buildChatParams({
+      messages: internalMessages,
+      system: callCtx.system || undefined,
+      tools: callCtx.tools.length > 0 ? callCtx.tools : undefined,
+    })
+    return Promise.resolve(provider.stream(chatParams, { signal: callCtx.signal }))
+  }
+
+  const wrappedModelCall = pipeline.buildModelCallChain(baseModelCall)
 
   // === RUN START ===
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
   yield { type: 'agent_run_start', runId, messages: state.messages }
 
   try {
-    await pipeline.runOnRunStart(ctx)
+    await pipeline.runBeforeAgent(ctx)
 
     // === MAIN LOOP ===
     while (turnIndex < maxTurns) {
@@ -196,32 +183,20 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
       ctx.tools = [...toolDefinitions]
       ctx.lastResponse = undefined
 
-      // beforeLLMCall hooks（中间件可修改 callMessages / system / tools）
-      await pipeline.runBeforeLLMCall(ctx)
+      // beforeModel hooks（中间件可修改 callMessages / system / tools）
+      await pipeline.runBeforeModel(ctx)
 
-      // ---- LLM CALL 阶段 ----
-      // baseLLMCall：将投影字段传给 Provider
-      const baseLLMCall: LLMCallFn = (callCtx) => {
-        const internalMessages = normalizeMessages(callCtx.callMessages)
-        const chatParams = buildChatParams({
-          messages: internalMessages,
-          system: callCtx.system || undefined,
-          tools: callCtx.tools.length > 0 ? callCtx.tools : undefined,
-        })
-        return Promise.resolve(provider.stream(chatParams, { signal: callCtx.signal }))
-      }
-
-      const wrappedLLMCall = pipeline.buildLLMCallChain(baseLLMCall)
-      const streamResult = await wrappedLLMCall(ctx)
+      // ---- MODEL CALL 阶段 ----
+      const streamResult = await wrappedModelCall(ctx)
 
       // 转发流式事件，同时等待完整响应
       const response: ChatResponse = yield* forwardStreamEvents(streamResult)
 
-      // 将 LLM 响应写入 ctx，供 afterLLMResponse 读取
+      // 将模型响应写入 ctx，供 afterModel 读取
       ctx.lastResponse = response
 
-      // afterLLMResponse hooks
-      await pipeline.runAfterLLMResponse(ctx)
+      // afterModel hooks（只读观察点，不修改 response）
+      await pipeline.runAfterModel(ctx)
 
       // 追加 assistant 消息到真实状态
       state.messages.push({ role: 'assistant', content: response.content })
@@ -231,29 +206,26 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
       const toolCalls = extractToolCalls(response.content)
 
       if (toolCalls.length === 0) {
-        // LLM 没有发起工具调用，本轮结束
+        // 模型没有发起工具调用，本轮结束
         stopReason = 'end_turn'
-        await pipeline.runOnTurnEnd(ctx)
         yield { type: 'turn_end', turnIndex, usage: response.usage }
         break
       }
 
-      // ---- TOOL EXEC 阶段 ----
+      // ---- TOOL CALL 阶段 ----
       // 按 parallelSafe 分组：并发安全的工具并行执行，其余串行
       const parallelCalls = toolCalls.filter((c) => toolMap.get(c.name)?.flags.parallelSafe)
       const sequentialCalls = toolCalls.filter((c) => !toolMap.get(c.name)?.flags.parallelSafe)
 
       // 执行并发安全的工具
       const parallelResults = await Promise.all(
-        parallelCalls.map((call) =>
-          executeToolCall(call, ctx, toolMap, pipeline, wrappedToolExec, cwd),
-        ),
+        parallelCalls.map((call) => executeToolCall(call, ctx, toolMap, wrappedToolCall)),
       )
 
       // 执行非并发安全的工具（串行）
       const sequentialResults: Array<{ toolCallId: string; output: ToolOutput }> = []
       for (const call of sequentialCalls) {
-        const result = await executeToolCall(call, ctx, toolMap, pipeline, wrappedToolExec, cwd)
+        const result = await executeToolCall(call, ctx, toolMap, wrappedToolCall)
         sequentialResults.push(result)
       }
 
@@ -274,8 +246,6 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
         }
       }
 
-      // 本轮结束，检查是否达到 maxTurns
-      await pipeline.runOnTurnEnd(ctx)
       yield { type: 'turn_end', turnIndex, usage: response.usage }
 
       turnIndex++
@@ -290,8 +260,8 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     // 将错误向上传播，由 agent.run() 的消费方处理
     throw err
   } finally {
-    // onRunEnd 类似 finally，即使出错也执行
-    await pipeline.runOnRunEnd(ctx)
+    // afterAgent 类似 finally，即使出错也执行
+    await pipeline.runAfterAgent(ctx)
   }
 
   // === RUN END ===
