@@ -53,6 +53,46 @@ export interface ToolDefinition {
 
 // === 事件类型 ===
 
+// === HITL 类型 ===
+
+/** 暂停时未完成的工具调用 */
+export interface PendingToolCall {
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+/**
+ * AgentState 的可序列化形式（metadata Map 转为普通对象）。
+ * 用于 checkpoint 的持久化与恢复。
+ */
+export interface SerializableAgentState {
+  messages: (Message & { _compressed?: true })[]
+  usage: Usage
+  /** metadata Map 序列化为 plain object */
+  metadata: Record<string, unknown>
+  middlewareStates: Record<string, Record<string, unknown>>
+}
+
+/**
+ * 暂停时 Loop 生成的快照，包含恢复执行所需的全部信息。
+ * 可序列化为 JSON 持久化，恢复时从数据重建。
+ */
+export interface SessionCheckpoint {
+  /** 暂停时的完整会话状态（含已执行工具的结果） */
+  state: SerializableAgentState
+  /** 暂停时未完成的 tool calls（恢复时从这里继续执行） */
+  pendingToolCalls: PendingToolCall[]
+  /** 暂停原因 */
+  reason: string
+  /** 附带的业务数据 */
+  payload?: Record<string, unknown>
+  /** 暂停时的轮次索引 */
+  turnIndex: number
+  /** 时间戳 */
+  suspendedAt: number
+}
+
 export type AgentEvent =
   | AgentRunStartEvent
   | AgentRunEndEvent
@@ -73,6 +113,7 @@ export type AgentEvent =
   | MCPEndEvent
   | TurnStartEvent
   | TurnEndEvent
+  | SuspendedEvent
 
 export interface AgentRunStartEvent {
   type: 'agent_run_start'
@@ -85,7 +126,7 @@ export interface AgentRunEndEvent {
   runId: string
   usage: Usage
   messages: Message[]
-  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort'
+  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort' | 'suspended'
 }
 
 export interface ReasoningStartEvent {
@@ -183,4 +224,11 @@ export interface TurnEndEvent {
   type: 'turn_end'
   turnIndex: number
   usage: Usage
+}
+
+export interface SuspendedEvent {
+  type: 'suspended'
+  checkpoint: SessionCheckpoint
+  reason: string
+  payload?: Record<string, unknown>
 }

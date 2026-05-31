@@ -1,4 +1,4 @@
-import type { Message, Usage } from '@mech/shared'
+import type { Message, Usage, SessionCheckpoint } from '@mech/shared'
 
 /**
  * 带框架内部标记的消息类型。
@@ -46,9 +46,11 @@ export interface RunResult {
   /** 最后一轮 assistant 的文本输出 */
   text: string
   /** 终止原因 */
-  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort'
+  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort' | 'suspended'
   /** 本次 run 的增量 token 用量（不含历史累计） */
   usage: Usage
   /** 本次 run 执行的轮次数 */
   turnsUsed: number
+  /** 暂停时的 checkpoint（仅 stopReason === 'suspended' 时有值） */
+  checkpoint?: SessionCheckpoint
 }

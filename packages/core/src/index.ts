@@ -4,6 +4,15 @@ export type { AgentConfig } from './agent/agent.js'
 export type { RunParams, RunResult, AgentState, AgentMessage } from './agent/types.js'
 export { createAgentState } from './agent/types.js'
 
+// HITL（Human-in-the-Loop）暂停与恢复
+export {
+  SuspendSignal,
+  isSuspendSignal,
+  serializeAgentState,
+  deserializeAgentState,
+} from './agent/hitl.js'
+export type { ResumeParams, ToolCallDecision } from './agent/hitl.js'
+
 // Provider 模块
 export type {
   LLMProvider,

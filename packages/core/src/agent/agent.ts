@@ -3,7 +3,8 @@ import type { LLMProvider } from '../provider/types.js'
 import type { Tool } from '../tools/types.js'
 import type { AgentMiddleware } from '../middleware/types.js'
 import type { RunParams, RunResult } from './types.js'
-import { runLoop } from './loop.js'
+import { runLoop, runLoopFromCheckpoint } from './loop.js'
+import type { ResumeParams } from './hitl.js'
 
 export interface AgentConfig {
   /** LLM Provider 实例（AnthropicProvider / OpenAIProvider / OpenAICompatibleProvider） */
@@ -63,6 +64,30 @@ export class Agent {
   }
 
   /**
+   * 从 checkpoint 恢复运行 Agent，先处理 pending tool calls 再继续循环。
+   */
+  async *resume(params: ResumeParams): AsyncIterable<AgentEvent> {
+    // 将各中间件的公有状态绑定到从 checkpoint 恢复的 state
+    const restoredState = params.checkpoint.state
+    for (const mw of this._middleware) {
+      if (mw.state !== undefined) {
+        const existing = restoredState.middlewareStates[mw.name]
+        if (existing) {
+          Object.assign(mw.state, existing)
+        }
+      }
+    }
+    yield* runLoopFromCheckpoint(params, {
+      provider: this._provider,
+      tools: this._tools,
+      system: this._system,
+      middleware: this._middleware,
+      maxTurns: params.maxTurns ?? this._maxTurns,
+      cwd: this._cwd,
+    })
+  }
+
+  /**
    * 一次性运行 Agent，等待最终结果。
    * 内部消费 run() 事件流并汇总为 RunResult。
    */
@@ -71,6 +96,7 @@ export class Agent {
     const usageAtStart = { ...state.usage }
     let turnsUsed = 0
     let stopReason: RunResult['stopReason'] = 'end_turn'
+    let checkpoint: RunResult['checkpoint']
 
     for await (const event of this.run(params)) {
       if (event.type === 'turn_end') {
@@ -78,6 +104,9 @@ export class Agent {
       }
       if (event.type === 'agent_run_end') {
         stopReason = event.stopReason
+      }
+      if (event.type === 'suspended') {
+        checkpoint = event.checkpoint
       }
     }
 
@@ -87,7 +116,7 @@ export class Agent {
       outputTokens: state.usage.outputTokens - usageAtStart.outputTokens,
     }
 
-    return { text, stopReason, usage, turnsUsed }
+    return { text, stopReason, usage, turnsUsed, checkpoint }
   }
 
   /** 运行时追加中间件 */
