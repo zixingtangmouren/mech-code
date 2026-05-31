@@ -22,11 +22,21 @@ type AnthropicMessage = {
   content: AnthropicContentBlock[]
 }
 
+/** tool_result 内部可嵌套的 content block */
+type AnthropicToolResultContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: AnthropicImageSource }
+
 type AnthropicContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string; signature: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | {
+      type: 'tool_result'
+      tool_use_id: string
+      content: string | AnthropicToolResultContent[]
+      is_error?: boolean
+    }
   | { type: 'image'; source: AnthropicImageSource }
 
 type AnthropicImageSource =
@@ -96,10 +106,25 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
       } else if (msg.role === 'tool') {
         // tool 消息 → Anthropic user 消息 with tool_result block
         // 连续的 tool 消息合并到同一个 user 消息中
+        let toolResultContent: string | AnthropicToolResultContent[] = msg.content
+        // 图片工具结果：生成多模态 content block
+        if (msg._imageData) {
+          toolResultContent = [
+            { type: 'text', text: msg.content },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: msg._imageData.mediaType,
+                data: msg._imageData.base64,
+              },
+            },
+          ]
+        }
         const toolResultBlock: AnthropicContentBlock = {
           type: 'tool_result',
           tool_use_id: msg.toolCallId,
-          content: msg.content,
+          content: toolResultContent,
         }
         const last = result[result.length - 1]
         if (last?.role === 'user' && last.content.some((b) => b.type === 'tool_result')) {

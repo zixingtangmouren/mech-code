@@ -232,3 +232,8 @@ export interface SuspendedEvent {
   reason: string
   payload?: Record<string, unknown>
 }
+
+// === 工具函数 ===
+
+export { expandPath } from './path.js'
+export { levenshtein } from './string.js'

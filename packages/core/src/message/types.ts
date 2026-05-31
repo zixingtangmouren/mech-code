@@ -11,4 +11,9 @@ export type InternalMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: UserContentBlock[] }
   | { role: 'assistant'; content: AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+  | {
+      role: 'tool'
+      toolCallId: string
+      content: string
+      _imageData?: { base64: string; mediaType: string }
+    }

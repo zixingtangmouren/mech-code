@@ -67,6 +67,21 @@ export interface ValidationResult {
   error?: string
 }
 
+// === 文件读取去重缓存 ===
+
+/**
+ * 文件读取缓存条目，用于 read_file 工具的重复读取去重。
+ * 通过 ToolRunContext.metadata['__readFileState'] 传递给工具。
+ */
+export interface ReadCacheEntry {
+  /** 文件读取时的 mtime（毫秒） */
+  timestamp: number
+  /** 上次读取的起始行 offset */
+  offset?: number
+  /** 上次读取的行数 limit */
+  limit?: number
+}
+
 // === 完整工具协议 ===
 
 /**

@@ -69,6 +69,7 @@ export type {
   ToolRunContext,
   ToolOutput,
   ValidationResult,
+  ReadCacheEntry,
 } from './tools/types.js'
 export { defineTool } from './tools/define.js'
 export type { ToolInit, ToolZodInit } from './tools/define.js'

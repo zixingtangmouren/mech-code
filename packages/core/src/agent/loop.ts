@@ -314,11 +314,19 @@ async function* runMainLoop(
     for (const call of toolCalls) {
       const output = batchResult.results.get(call.id)
       if (output) {
-        state.messages.push({
+        const toolMsg: (typeof state.messages)[number] = {
           role: 'tool',
           toolCallId: call.id,
           content: output.isError ? `Error: ${output.content}` : output.content,
-        })
+        }
+        // 图片工具结果：附加 _imageData 供 serializer 生成多模态 content block
+        if (output.metadata?.type === 'image' && typeof output.metadata.base64 === 'string') {
+          toolMsg._imageData = {
+            base64: output.metadata.base64,
+            mediaType: output.metadata.mediaType as string,
+          }
+        }
+        state.messages.push(toolMsg)
       }
     }
 
@@ -372,6 +380,10 @@ function initLoopInfra(
     const validation = await tool.validateInput(toolCtx.toolInput)
     if (!validation.valid) {
       return { content: `输入校验失败: ${validation.error ?? '未知错误'}`, isError: true }
+    }
+    // 惰性初始化 readFileState（跨 turn 持久化，供 read_file 工具去重）
+    if (!toolCtx.state.metadata.has('__readFileState')) {
+      toolCtx.state.metadata.set('__readFileState', new Map<string, unknown>())
     }
     return tool.execute(toolCtx.toolInput, {
       cwd,

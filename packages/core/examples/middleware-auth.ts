@@ -197,8 +197,8 @@ async function main(): Promise<void> {
   // 创建 Provider（DeepSeek 兼容 OpenAI API 格式）
   const provider = new OpenAICompatibleProvider({
     apiKey,
-    model: 'deepseek-chat',
-    baseUrl: 'https://api.deepseek.com',
+    model: 'qwen3.6-plus',
+    baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode',
   })
 
   // 创建 Agent，注入鉴权中间件
