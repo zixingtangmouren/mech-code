@@ -297,12 +297,14 @@ export const readFileTool = defineTool({
       }
     }
 
-    // 更新去重缓存
+    // 更新去重缓存（全文读取时额外存储 content，供 edit_file 做一致性校验）
     if (readFileState) {
+      const isFullRead = offset === 1 && limit === undefined
       readFileState.set(resolvedPath, {
         timestamp: Math.floor(mtimeMs),
         offset,
         limit,
+        content: isFullRead ? rawContent : undefined,
       })
     }
 
