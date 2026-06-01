@@ -1,13 +1,15 @@
-# @mech/core
+# @mech-code/core
 
 [English](./README.md)
 
-`@mech/core` 是 Mech-Code 的 SDK 核心包，包含 Agent 循环引擎、多模型 Provider、工具协议、中间件管道等全部运行时能力。它不依赖终端/UI，可运行于 Node.js、Bun 等任意 JS 运行时。
+`@mech-code/core` 是 Mech-Code 的 SDK 核心包，包含 Agent 循环引擎、多模型 Provider、工具协议、中间件管道等全部运行时能力。它不依赖终端/UI，可运行于 Node.js、Bun 等任意 JS 运行时。
 
 ## 安装
 
 ```bash
-pnpm add @mech/core
+npm install @mech-code/core
+# 或
+pnpm add @mech-code/core
 ```
 
 ---
@@ -15,7 +17,7 @@ pnpm add @mech/core
 ## 快速开始
 
 ```ts
-import { createAgent, AnthropicProvider, defineTool } from '@mech/core'
+import { createAgent, AnthropicProvider, defineTool } from '@mech-code/core'
 import { z } from 'zod'
 
 // 1. 定义工具
@@ -126,7 +128,7 @@ const { content, usage, stopReason } = await final
 所有 Provider 将厂商错误统一翻译为 `ProviderError`：
 
 ```ts
-import { ProviderError } from '@mech/core'
+import { ProviderError } from '@mech-code/core'
 
 try {
   await provider.chat(params)
@@ -159,7 +161,7 @@ try {
 推荐使用 **Zod schema 方式**，可获得完整类型安全和自动输入校验：
 
 ```ts
-import { defineTool } from '@mech/core'
+import { defineTool } from '@mech-code/core'
 import { z } from 'zod'
 
 const searchTool = defineTool({
@@ -217,7 +219,7 @@ interface ToolFlags {
 ### 工具注册表
 
 ```ts
-import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '@mech/core'
+import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '@mech-code/core'
 
 registerTool(searchTool)
 
@@ -261,7 +263,7 @@ interface AgentMiddleware {
 对于有状态的中间件，推荐继承 `Middleware` 基类：
 
 ```ts
-import { Middleware } from '@mech/core'
+import { Middleware } from '@mech-code/core'
 
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
@@ -302,7 +304,7 @@ interface RunContext {
 ### 示例：日志中间件（Hook 模式）
 
 ```ts
-import type { AgentMiddleware } from '@mech/core'
+import type { AgentMiddleware } from '@mech-code/core'
 
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
@@ -396,7 +398,12 @@ const messages: Message[] = [
 ### 消息工具函数
 
 ```ts
-import { normalizeMessage, normalizeMessages, denormalizeMessage, estimateTokens } from '@mech/core'
+import {
+  normalizeMessage,
+  normalizeMessages,
+  denormalizeMessage,
+  estimateTokens,
+} from '@mech-code/core'
 
 // 外部 Message → 内部规范化格式（字符串内容转为内容块数组）
 const internal = normalizeMessage({ role: 'user', content: 'Hello' })
@@ -412,7 +419,7 @@ const tokens = estimateTokens('Hello, world!')
 ### 创建 Agent
 
 ```ts
-import { createAgent, createAgentState } from '@mech/core'
+import { createAgent, createAgentState } from '@mech-code/core'
 
 const agent = createAgent({
   provider,            // LLMProvider 实例（必填）
@@ -478,22 +485,22 @@ const summaryAgent = mainAgent.fork({
 
 ## 类型导出速查
 
-| 导出名                                     | 说明                                     |
-| ------------------------------------------ | ---------------------------------------- |
-| `createAgent` / `Agent`                    | Agent 工厂与类                           |
-| `createAgentState`                         | 创建空的 `AgentState`                    |
-| `AgentState` / `AgentMessage`              | 会话状态类型                             |
-| `RunParams` / `RunResult`                  | Agent 运行参数与结果                     |
-| `RunContext` / `ToolCallContext`           | 中间件上下文类型                         |
-| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap 模式中间件函数类型                  |
-| `Middleware`                               | 有状态中间件基类                         |
-| `MiddlewarePipeline`                       | 管道执行器（进阶使用）                   |
-| `AnthropicProvider`                        | Anthropic Provider                       |
-| `OpenAIProvider`                           | OpenAI Provider                          |
-| `OpenAICompatibleProvider`                 | 兼容 OpenAI 协议的通用 Provider          |
-| `ProviderError`                            | 统一错误类                               |
-| `defineTool`                               | 工具定义工厂                             |
-| `registerTool` / `getTool` / `getAllTools` | 工具注册表操作                           |
-| `normalizeMessage` / `denormalizeMessage`  | 消息格式转换                             |
-| `estimateTokens`                           | Token 数快速估算                         |
-| `Message` / `AgentEvent` / `Usage`         | 共享类型（来自 `@mech/shared` 的再导出） |
+| 导出名                                     | 说明                                          |
+| ------------------------------------------ | --------------------------------------------- |
+| `createAgent` / `Agent`                    | Agent 工厂与类                                |
+| `createAgentState`                         | 创建空的 `AgentState`                         |
+| `AgentState` / `AgentMessage`              | 会话状态类型                                  |
+| `RunParams` / `RunResult`                  | Agent 运行参数与结果                          |
+| `RunContext` / `ToolCallContext`           | 中间件上下文类型                              |
+| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap 模式中间件函数类型                       |
+| `Middleware`                               | 有状态中间件基类                              |
+| `MiddlewarePipeline`                       | 管道执行器（进阶使用）                        |
+| `AnthropicProvider`                        | Anthropic Provider                            |
+| `OpenAIProvider`                           | OpenAI Provider                               |
+| `OpenAICompatibleProvider`                 | 兼容 OpenAI 协议的通用 Provider               |
+| `ProviderError`                            | 统一错误类                                    |
+| `defineTool`                               | 工具定义工厂                                  |
+| `registerTool` / `getTool` / `getAllTools` | 工具注册表操作                                |
+| `normalizeMessage` / `denormalizeMessage`  | 消息格式转换                                  |
+| `estimateTokens`                           | Token 数快速估算                              |
+| `Message` / `AgentEvent` / `Usage`         | 共享类型（来自 `@mech-code/shared` 的再导出） |

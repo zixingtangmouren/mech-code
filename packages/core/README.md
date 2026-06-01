@@ -1,13 +1,15 @@
-# @mech/core
+# @mech-code/core
 
 [中文文档](./README.zh-CN.md)
 
-`@mech/core` is the SDK core of Mech-Code. It contains the Agent loop engine, multi-model Provider adapters, the tool protocol, and the middleware pipeline. It has no dependency on the terminal or UI, and runs on any JS runtime — Node.js, Bun, etc.
+`@mech-code/core` is the SDK core of Mech-Code. It contains the Agent loop engine, multi-model Provider adapters, the tool protocol, and the middleware pipeline. It has no dependency on the terminal or UI, and runs on any JS runtime — Node.js, Bun, etc.
 
 ## Installation
 
 ```bash
-pnpm add @mech/core
+npm install @mech-code/core
+# or
+pnpm add @mech-code/core
 ```
 
 ---
@@ -15,7 +17,7 @@ pnpm add @mech/core
 ## Quick Start
 
 ```ts
-import { createAgent, AnthropicProvider, defineTool } from '@mech/core'
+import { createAgent, AnthropicProvider, defineTool } from '@mech-code/core'
 import { z } from 'zod'
 
 // 1. Define a tool
@@ -126,7 +128,7 @@ const { content, usage, stopReason } = await final
 All providers translate vendor errors into a unified `ProviderError`:
 
 ```ts
-import { ProviderError } from '@mech/core'
+import { ProviderError } from '@mech-code/core'
 
 try {
   await provider.chat(params)
@@ -159,7 +161,7 @@ try {
 The recommended approach is the **Zod schema style**, which provides full type safety and automatic input validation:
 
 ```ts
-import { defineTool } from '@mech/core'
+import { defineTool } from '@mech-code/core'
 import { z } from 'zod'
 
 const searchTool = defineTool({
@@ -217,7 +219,7 @@ interface ToolFlags {
 ### Tool registry
 
 ```ts
-import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '@mech/core'
+import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '@mech-code/core'
 
 registerTool(searchTool)
 
@@ -261,7 +263,7 @@ interface AgentMiddleware {
 For stateful middleware, extend the `Middleware` base class:
 
 ```ts
-import { Middleware } from '@mech/core'
+import { Middleware } from '@mech-code/core'
 
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
@@ -302,7 +304,7 @@ interface RunContext {
 ### Example: logger middleware (Hook mode)
 
 ```ts
-import type { AgentMiddleware } from '@mech/core'
+import type { AgentMiddleware } from '@mech-code/core'
 
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
@@ -395,7 +397,12 @@ const messages: Message[] = [
 ### Message utilities
 
 ```ts
-import { normalizeMessage, normalizeMessages, denormalizeMessage, estimateTokens } from '@mech/core'
+import {
+  normalizeMessage,
+  normalizeMessages,
+  denormalizeMessage,
+  estimateTokens,
+} from '@mech-code/core'
 
 // External Message → internal normalized form (string content becomes a content-block array)
 const internal = normalizeMessage({ role: 'user', content: 'Hello' })
@@ -411,7 +418,7 @@ const tokens = estimateTokens('Hello, world!')
 ### Creating an agent
 
 ```ts
-import { createAgent, createAgentState } from '@mech/core'
+import { createAgent, createAgentState } from '@mech-code/core'
 
 const agent = createAgent({
   provider,            // LLMProvider instance (required)
@@ -477,22 +484,22 @@ const summaryAgent = mainAgent.fork({
 
 ## Exports Reference
 
-| Export                                     | Description                                    |
-| ------------------------------------------ | ---------------------------------------------- |
-| `createAgent` / `Agent`                    | Agent factory and class                        |
-| `createAgentState`                         | Create an empty `AgentState`                   |
-| `AgentState` / `AgentMessage`              | Session state types                            |
-| `RunParams` / `RunResult`                  | Agent run input and output types               |
-| `RunContext` / `ToolCallContext`           | Middleware context types                       |
-| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap-mode middleware function types            |
-| `Middleware`                               | Stateful middleware base class                 |
-| `MiddlewarePipeline`                       | Pipeline executor (advanced use)               |
-| `AnthropicProvider`                        | Anthropic provider                             |
-| `OpenAIProvider`                           | OpenAI provider                                |
-| `OpenAICompatibleProvider`                 | Generic OpenAI-compatible provider             |
-| `ProviderError`                            | Unified provider error class                   |
-| `defineTool`                               | Tool definition factory                        |
-| `registerTool` / `getTool` / `getAllTools` | Tool registry operations                       |
-| `normalizeMessage` / `denormalizeMessage`  | Message format conversion                      |
-| `estimateTokens`                           | Fast approximate token count                   |
-| `Message` / `AgentEvent` / `Usage`         | Shared types (re-exported from `@mech/shared`) |
+| Export                                     | Description                                         |
+| ------------------------------------------ | --------------------------------------------------- |
+| `createAgent` / `Agent`                    | Agent factory and class                             |
+| `createAgentState`                         | Create an empty `AgentState`                        |
+| `AgentState` / `AgentMessage`              | Session state types                                 |
+| `RunParams` / `RunResult`                  | Agent run input and output types                    |
+| `RunContext` / `ToolCallContext`           | Middleware context types                            |
+| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap-mode middleware function types                 |
+| `Middleware`                               | Stateful middleware base class                      |
+| `MiddlewarePipeline`                       | Pipeline executor (advanced use)                    |
+| `AnthropicProvider`                        | Anthropic provider                                  |
+| `OpenAIProvider`                           | OpenAI provider                                     |
+| `OpenAICompatibleProvider`                 | Generic OpenAI-compatible provider                  |
+| `ProviderError`                            | Unified provider error class                        |
+| `defineTool`                               | Tool definition factory                             |
+| `registerTool` / `getTool` / `getAllTools` | Tool registry operations                            |
+| `normalizeMessage` / `denormalizeMessage`  | Message format conversion                           |
+| `estimateTokens`                           | Fast approximate token count                        |
+| `Message` / `AgentEvent` / `Usage`         | Shared types (re-exported from `@mech-code/shared`) |
