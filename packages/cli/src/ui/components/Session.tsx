@@ -2,38 +2,48 @@ import { Box, Text, useApp } from 'ink'
 import React, { useState, useCallback, useRef } from 'react'
 import type { Agent, AgentState } from '@mech/core'
 import { createAgentState } from '@mech/core'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent, Usage } from '@mech/shared'
 import { InputBox } from './InputBox.js'
-import { MessageStream } from './MessageStream.js'
+import { MessageList } from './MessageList.js'
+import type { HistoryEntry } from './MessageList.js'
+import { Header } from './Header.js'
+import { StatusBar } from './StatusBar.js'
+import { Spinner } from './Spinner.js'
 import { parseSlashCommand, executeSlashCommand } from '../commands.js'
+import { colors } from '../theme.js'
 
 /** 会话状态机 */
 type SessionStatus = 'idle' | 'processing'
 
 interface SessionProps {
   agent: Agent
-}
-
-/** 历史消息展示条目 */
-interface HistoryEntry {
-  role: 'user' | 'assistant'
-  content: string
-  events?: AgentEvent[]
+  /** 当前使用的模型名 */
+  model: string
+  /** 当前工作目录 */
+  cwd: string
 }
 
 /**
  * 会话容器 —— 管理完整的对话生命周期。
  * 持有 AgentState，处理输入/输出/中断逻辑。
  */
-export function Session({ agent }: SessionProps): React.ReactElement {
+export function Session({ agent, model, cwd }: SessionProps): React.ReactElement {
   const { exit } = useApp()
   const [status, setStatus] = useState<SessionStatus>('idle')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [currentEvents, setCurrentEvents] = useState<AgentEvent[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [totalUsage, setTotalUsage] = useState<Usage | null>(null)
+  const [spinnerLabel, setSpinnerLabel] = useState('思考中...')
+  const [processingStartTime, setProcessingStartTime] = useState<number>(0)
 
   const stateRef = useRef<AgentState>(createAgentState())
   const abortRef = useRef<AbortController | null>(null)
+
+  // 中断当前生成
+  const handleInterrupt = useCallback(() => {
+    abortRef.current?.abort()
+  }, [])
 
   // 处理用户提交消息
   const handleSubmit = useCallback(
@@ -45,6 +55,7 @@ export function Session({ agent }: SessionProps): React.ReactElement {
           clearHistory: () => {
             setHistory([])
             stateRef.current = createAgentState()
+            setTotalUsage(null)
           },
           exit,
         })
@@ -60,6 +71,8 @@ export function Session({ agent }: SessionProps): React.ReactElement {
       setCurrentEvents([])
       setError(null)
       setStatus('processing')
+      setSpinnerLabel('思考中...')
+      setProcessingStartTime(Date.now())
 
       const abortController = new AbortController()
       abortRef.current = abortController
@@ -72,6 +85,27 @@ export function Session({ agent }: SessionProps): React.ReactElement {
         })) {
           events.push(event)
           setCurrentEvents([...events])
+
+          // 更新 spinner 标签
+          if (event.type === 'tool_start') {
+            setSpinnerLabel(`执行 ${event.toolName}...`)
+          } else if (event.type === 'tool_end') {
+            setSpinnerLabel('思考中...')
+          } else if (event.type === 'reasoning_start') {
+            setSpinnerLabel('思考中...')
+          }
+
+          // 累计 token 用量
+          if (event.type === 'turn_end' && event.usage) {
+            setTotalUsage((prev) => {
+              if (!prev) return event.usage
+              return {
+                inputTokens: prev.inputTokens + event.usage.inputTokens,
+                outputTokens: prev.outputTokens + event.usage.outputTokens,
+                cacheReadTokens: (prev.cacheReadTokens ?? 0) + (event.usage.cacheReadTokens ?? 0),
+              }
+            })
+          }
         }
 
         // 提取最终文本
@@ -99,51 +133,33 @@ export function Session({ agent }: SessionProps): React.ReactElement {
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      {/* 欢迎信息 */}
-      {history.length === 0 && (
-        <Box marginBottom={1} flexDirection="column">
-          <Text bold color="cyan">
-            mech-code
-          </Text>
-          <Text dimColor>交互式 AI 助手。输入消息开始对话。</Text>
-          <Text dimColor>Ctrl+J 换行 | Enter 发送 | /help 查看命令</Text>
-        </Box>
-      )}
+      {/* 欢迎头部 */}
+      <Header model={model} cwd={cwd} />
 
-      {/* 历史消息 */}
-      {history.map((entry, i) => (
-        <Box key={i} flexDirection="column" marginBottom={1}>
-          {entry.role === 'user' ? (
-            <Box>
-              <Text color="blue" bold>
-                {'You: '}
-              </Text>
-              <Text>{entry.content}</Text>
-            </Box>
-          ) : entry.events ? (
-            <MessageStream events={entry.events} />
-          ) : (
-            <Box>
-              <Text>{entry.content}</Text>
-            </Box>
-          )}
-        </Box>
-      ))}
-
-      {/* 当前流式输出 */}
-      {status === 'processing' && currentEvents.length > 0 && (
-        <MessageStream events={currentEvents} />
-      )}
+      {/* 消息列表 */}
+      <MessageList
+        history={history}
+        currentEvents={status === 'processing' ? currentEvents : undefined}
+      />
 
       {/* 处理中指示 */}
       {status === 'processing' && currentEvents.length === 0 && (
-        <Text color="yellow">思考中...</Text>
+        <Box marginTop={1}>
+          <Spinner label={spinnerLabel} startTime={processingStartTime} />
+        </Box>
+      )}
+
+      {/* 工具执行时也显示 spinner (当有事件但最后一个工具还未完成) */}
+      {status === 'processing' && currentEvents.length > 0 && isLastToolPending(currentEvents) && (
+        <Box marginTop={0}>
+          <Spinner label={spinnerLabel} startTime={processingStartTime} />
+        </Box>
       )}
 
       {/* 错误信息 */}
       {error && (
-        <Box marginBottom={1}>
-          <Text color="red">错误: {error}</Text>
+        <Box marginTop={1}>
+          <Text color={colors.error}>✗ 错误: {error}</Text>
         </Box>
       )}
 
@@ -153,7 +169,27 @@ export function Session({ agent }: SessionProps): React.ReactElement {
           void handleSubmit(text)
         }}
         disabled={status === 'processing'}
+        onInterrupt={handleInterrupt}
       />
+
+      {/* 状态栏 */}
+      <StatusBar model={model} usage={totalUsage} />
     </Box>
   )
+}
+
+/** 检查最后一个工具调用是否仍在执行中 */
+function isLastToolPending(events: AgentEvent[]): boolean {
+  let lastToolId: string | null = null
+  const doneTools = new Set<string>()
+
+  for (const event of events) {
+    if (event.type === 'tool_start') {
+      lastToolId = event.toolCallId
+    } else if (event.type === 'tool_end' || event.type === 'tool_result') {
+      doneTools.add(event.toolCallId)
+    }
+  }
+
+  return lastToolId !== null && !doneTools.has(lastToolId)
 }

@@ -46,6 +46,6 @@ export function registerChatCommand(program: Command): void {
         maxTurns: 20,
       })
 
-      render(React.createElement(App, { agent }))
+      render(React.createElement(App, { agent, model: providerEntry.model, cwd }))
     })
 }
