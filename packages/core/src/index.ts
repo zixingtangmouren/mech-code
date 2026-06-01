@@ -83,7 +83,6 @@ export {
 export {
   readFileTool,
   writeFileTool,
-  listDirTool,
   editFileTool,
   bashTool,
   getBuiltinTools,
