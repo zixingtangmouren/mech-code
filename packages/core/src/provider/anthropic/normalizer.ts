@@ -1,4 +1,4 @@
-import type { AgentEvent, Usage } from '@mech/shared'
+import type { AgentEvent, Usage } from '@mech-code/shared'
 import type { StreamNormalizer, StreamMeta } from '../types.js'
 
 // === Anthropic SSE 原始事件类型 ===

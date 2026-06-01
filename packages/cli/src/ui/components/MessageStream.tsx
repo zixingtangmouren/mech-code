@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink'
 import React from 'react'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 
 interface MessageStreamProps {
   /** 事件流，依次推送到组件 */

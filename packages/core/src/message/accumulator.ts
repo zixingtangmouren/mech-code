@@ -1,4 +1,4 @@
-import type { AgentEvent, AssistantContentBlock } from '@mech/shared'
+import type { AgentEvent, AssistantContentBlock } from '@mech-code/shared'
 import type { InternalMessage } from './types.js'
 
 /**

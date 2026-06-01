@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@mech/shared'
+import type { ToolDefinition } from '@mech-code/shared'
 import type { ChatParams } from '../provider/types.js'
 import type { InternalMessage } from './types.js'
 

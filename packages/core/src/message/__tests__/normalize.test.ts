@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeMessage, normalizeMessages, denormalizeMessage } from '../normalize.js'
-import type { Message } from '@mech/shared'
+import type { Message } from '@mech-code/shared'
 
 describe('normalizeMessage', () => {
   it('passes system message through unchanged', () => {

@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat, mkdir, readdir } from 'node:fs/promises'
 import { resolve, dirname, basename } from 'node:path'
 import { z } from 'zod'
-import { expandPath, levenshtein } from '@mech/shared'
+import { expandPath, levenshtein } from '@mech-code/shared'
 import { defineTool } from '../define.js'
 import type { ReadCacheEntry } from '../types.js'
 

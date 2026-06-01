@@ -7,5 +7,5 @@ export default defineConfig({
   clean: true,
   dts: true,
   sourcemap: true,
-  external: ['@mech/shared'],
+  external: ['@mech-code/shared'],
 })

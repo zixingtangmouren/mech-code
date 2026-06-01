@@ -1,5 +1,5 @@
 {
-  "name": "@mech/shared",
+  "name": "@mech-code/shared",
   "version": "0.1.0",
   "type": "module",
   "exports": {

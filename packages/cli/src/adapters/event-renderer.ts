@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 
 /**
  * 将核心 AgentEvent 适配为终端 UI 的渲染操作。

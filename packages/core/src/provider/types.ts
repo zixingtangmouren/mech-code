@@ -1,4 +1,4 @@
-import type { AgentEvent, AssistantContentBlock, ToolDefinition, Usage } from '@mech/shared'
+import type { AgentEvent, AssistantContentBlock, ToolDefinition, Usage } from '@mech-code/shared'
 import type { InternalMessage } from '../message/types.js'
 
 // === 模型生成参数 ===

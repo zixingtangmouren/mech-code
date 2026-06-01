@@ -1,7 +1,7 @@
-import type { SessionCheckpoint } from '@mech/shared'
+import type { SessionCheckpoint } from '@mech-code/shared'
 import type { AgentState } from './types.js'
 
-export type { SessionCheckpoint, SerializableAgentState, PendingToolCall } from '@mech/shared'
+export type { SessionCheckpoint, SerializableAgentState, PendingToolCall } from '@mech-code/shared'
 
 /**
  * 中间件通过在 wrapToolCall 中抛出 SuspendSignal 来声明"需要暂停"。

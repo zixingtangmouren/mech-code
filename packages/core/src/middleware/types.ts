@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@mech/shared'
+import type { ToolDefinition } from '@mech-code/shared'
 import type { AgentMessage, AgentState } from '../agent/types.js'
 import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
 import type { ToolOutput } from '../tools/types.js'

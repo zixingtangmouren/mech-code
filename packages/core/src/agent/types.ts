@@ -1,4 +1,4 @@
-import type { Message, Usage, SessionCheckpoint } from '@mech/shared'
+import type { Message, Usage, SessionCheckpoint } from '@mech-code/shared'
 
 /**
  * 带框架内部标记的消息类型。

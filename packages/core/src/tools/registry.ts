@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@mech/shared'
+import type { ToolDefinition } from '@mech-code/shared'
 import type { Tool } from './types.js'
 
 const registry = new Map<string, Tool>()

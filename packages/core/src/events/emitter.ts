@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 
 /**
  * 创建一个用于 AgentEvent 的异步可迭代发射器。

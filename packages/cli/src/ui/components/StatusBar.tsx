@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink'
 import React from 'react'
 import { colors, icons } from '../theme.js'
-import type { Usage } from '@mech/shared'
+import type { Usage } from '@mech-code/shared'
 
 interface StatusBarProps {
   /** 当前模型名 */

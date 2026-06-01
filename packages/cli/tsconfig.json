@@ -4,8 +4,8 @@
     "outDir": "dist",
     "rootDir": "src",
     "paths": {
-      "@mech/shared": ["../shared/src/index.ts"],
-      "@mech/core": ["../core/src/index.ts"]
+      "@mech-code/shared": ["../shared/src/index.ts"],
+      "@mech-code/core": ["../core/src/index.ts"]
     }
   },
   "include": ["src"],

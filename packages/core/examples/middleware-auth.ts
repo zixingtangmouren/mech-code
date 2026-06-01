@@ -16,7 +16,7 @@ import * as readline from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 import { Agent, OpenAICompatibleProvider, Middleware, createAgentState } from '../src/index.js'
 import { readFileTool, writeFileTool } from '../src/tools/builtins/index.js'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 import type { ToolCallContext, ToolCallFn } from '../src/index.js'
 import type { Tool, ToolOutput } from '../src/index.js'
 

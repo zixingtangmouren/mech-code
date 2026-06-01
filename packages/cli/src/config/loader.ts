@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { AnthropicProvider, OpenAIProvider, OpenAICompatibleProvider } from '@mech/core'
-import type { LLMProvider } from '@mech/core'
+import { AnthropicProvider, OpenAIProvider, OpenAICompatibleProvider } from '@mech-code/core'
+import type { LLMProvider } from '@mech-code/core'
 import type { MechConfig, ProviderConfigEntry } from './schema.js'
 import { resolveProviderConfig } from './schema.js'
 

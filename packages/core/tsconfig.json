@@ -5,7 +5,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "paths": {
-      "@mech/shared": ["../shared/src/index.ts"]
+      "@mech-code/shared": ["../shared/src/index.ts"]
     }
   },
   "include": ["src"],

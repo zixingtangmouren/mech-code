@@ -2,7 +2,7 @@
  * 基础示例：创建 Agent + 自定义工具 + 终端对话
  *
  * 运行方式：
- *   pnpm --filter @mech/core example
+ *   pnpm --filter @mech-code/core example
  *
  * 需要在环境变量中设置：
  *   DEEPSEEK_API_KEY=sk-...
@@ -12,7 +12,7 @@ import * as readline from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 import { z } from 'zod'
 import { Agent, OpenAICompatibleProvider, createAgentState, defineTool } from '../src/index.js'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 
 // ─── ANSI 颜色工具 ──────────────────────────────────────────────────────────
 

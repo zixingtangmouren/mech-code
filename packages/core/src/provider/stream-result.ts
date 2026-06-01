@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 import type { ChatResponse, StreamResult, StreamNormalizer } from './types.js'
 import { MessageAccumulator } from '../message/accumulator.js'
 

@@ -27,7 +27,7 @@ export type Message =
   | { role: 'tool'; toolCallId: string; content: string }
 
 // === Provider 配置 ===
-// ProviderConfig 已移至 @mech/core 的 provider/types.ts，在那里可引用完整的 ModelParams 类型。
+// ProviderConfig 已移至 @mech-code/core 的 provider/types.ts，在那里可引用完整的 ModelParams 类型。
 
 // === 用量统计 ===
 
@@ -43,7 +43,7 @@ export interface Usage {
 /**
  * ToolDefinition — 发送给 LLM 的工具精简视图。
  * 仅包含 LLM 所需的最小字段，由 Provider 序列化为请求体。
- * 完整工具协议定义在 @mech/core 的 Tool 接口中。
+ * 完整工具协议定义在 @mech-code/core 的 Tool 接口中。
  */
 export interface ToolDefinition {
   name: string

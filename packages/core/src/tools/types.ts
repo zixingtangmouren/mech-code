@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@mech/shared'
+import type { ToolDefinition } from '@mech-code/shared'
 
 // === 工具固有属性 ===
 

@@ -1,5 +1,5 @@
 import React from 'react'
-import type { Agent } from '@mech/core'
+import type { Agent } from '@mech-code/core'
 import { Session } from './components/Session.js'
 
 interface AppProps {

@@ -1,4 +1,4 @@
-import type { Message } from '@mech/shared'
+import type { Message } from '@mech-code/shared'
 import type { InternalMessage } from './types.js'
 
 /**

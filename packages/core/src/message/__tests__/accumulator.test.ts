@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MessageAccumulator } from '../accumulator.js'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 
 describe('MessageAccumulator', () => {
   it('accumulates text events into assistant message', () => {

@@ -1,4 +1,4 @@
-import type { AssistantContentBlock, Usage } from '@mech/shared'
+import type { AssistantContentBlock, Usage } from '@mech-code/shared'
 import type { ChatParams, CallOptions, ChatResponse, StreamResult, ModelParams } from '../types.js'
 import { BaseProvider, parseSse, wrapFetchError } from '../base.js'
 import { AnthropicSerializer } from './serializer.js'

@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 import type { LLMProvider } from '../provider/types.js'
 import type { Tool } from '../tools/types.js'
 import type { AgentMiddleware } from '../middleware/types.js'

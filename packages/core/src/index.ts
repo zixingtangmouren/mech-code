@@ -98,4 +98,4 @@ export type {
   Usage,
   ToolDefinition,
   AgentEvent,
-} from '@mech/shared'
+} from '@mech-code/shared'

@@ -1,6 +1,6 @@
 import { Box } from 'ink'
 import React from 'react'
-import type { AgentEvent } from '@mech/shared'
+import type { AgentEvent } from '@mech-code/shared'
 import { UserMessage, AssistantText, ThinkingBlock, ToolCall } from './messages/index.js'
 import { useEventAggregator } from '../hooks/useEventAggregator.js'
 
@@ -54,18 +54,19 @@ function EventBlock({ events }: { events: AgentEvent[] }): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      {/* 思考过程 */}
+      {/* 思考过程始终在最前 */}
       {block.thinking && (
         <ThinkingBlock content={block.thinking} isStreaming={block.isThinkingStreaming} />
       )}
 
-      {/* 正文 */}
-      {block.text && <AssistantText content={block.text} />}
-
-      {/* 工具调用 */}
-      {block.toolCalls.map((tool) => (
-        <ToolCall key={tool.id} tool={tool} />
-      ))}
+      {/* 按原始顺序渲染文本段与工具调用，保持穿插关系 */}
+      {block.blocks.map((b, i) =>
+        b.type === 'text' ? (
+          <AssistantText key={i} content={b.content} isStreaming={b.isStreaming} />
+        ) : (
+          <ToolCall key={b.tool.id} tool={b.tool} />
+        ),
+      )}
     </Box>
   )
 }

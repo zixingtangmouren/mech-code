@@ -1,5 +1,5 @@
 {
-  "name": "@mech/cli",
+  "name": "@mech-code/cli",
   "version": "0.1.0",
   "type": "module",
   "bin": {
@@ -14,8 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mech/core": "workspace:*",
-    "@mech/shared": "workspace:*",
+    "@mech-code/core": "workspace:*",
+    "@mech-code/shared": "workspace:*",
     "chalk": "^5.0.0",
     "commander": "^12.0.0",
     "ink": "^4.4.1",

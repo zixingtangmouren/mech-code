@@ -1,4 +1,4 @@
-import type { UserContentBlock, AssistantContentBlock } from '@mech/shared'
+import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 import type { InternalMessage } from '../../message/types.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 

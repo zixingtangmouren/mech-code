@@ -1,4 +1,4 @@
-import type { UserContentBlock, AssistantContentBlock } from '@mech/shared'
+import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 
 export type { UserContentBlock, AssistantContentBlock }
 
