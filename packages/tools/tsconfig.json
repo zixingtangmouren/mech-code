@@ -1,7 +1,6 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "composite": true,
     "outDir": "dist",
     "rootDir": "src",
     "paths": {
@@ -9,7 +8,7 @@
       "@mech-code/shared": ["../shared/src/index.ts"]
     }
   },
-  "include": ["src"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"],
   "references": [{ "path": "../core" }, { "path": "../shared" }]
 }
