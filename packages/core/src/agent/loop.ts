@@ -368,8 +368,34 @@ function initLoopInfra(
   const signal = controller.signal
 
   const pipeline = new MiddlewarePipeline(middleware)
-  const toolMap = new Map(tools.map((t) => [t.name, t]))
-  const toolDefinitions: ToolDefinition[] = tools.map((t) => t.toDefinition())
+
+  // 合并 config.tools 与中间件声明的工具，冲突时抛错
+  const toolMap = new Map<string, Tool>()
+  const toolSourceMap = new Map<string, string>()
+
+  for (const t of tools) {
+    if (toolMap.has(t.name)) {
+      throw new Error(`工具名称冲突: "${t.name}" 在 AgentConfig.tools 中重复定义`)
+    }
+    toolMap.set(t.name, t)
+    toolSourceMap.set(t.name, '__config__')
+  }
+
+  for (const { tool, source } of pipeline.collectMiddlewareTools()) {
+    if (toolMap.has(tool.name)) {
+      const existingSource = toolSourceMap.get(tool.name)!
+      throw new Error(
+        `工具名称冲突: "${tool.name}" 已由 ${existingSource === '__config__' ? 'AgentConfig.tools' : `中间件 "${existingSource}"`} 注册，` +
+          `中间件 "${source}" 不能重复注册同名工具`,
+      )
+    }
+    toolMap.set(tool.name, tool)
+    toolSourceMap.set(tool.name, source)
+  }
+
+  const toolDefinitions: ToolDefinition[] = Array.from(toolMap.values()).map((t) =>
+    t.toDefinition(),
+  )
 
   // 构建 baseToolCall（工具执行，不含中间件）
   const baseToolCall: ToolCallFn = async (toolCtx) => {
@@ -432,13 +458,30 @@ function initLoopInfra(
  * - 工具错误作为 tool role 消息反馈给 LLM，提供自愈机会
  */
 export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGenerator<AgentEvent> {
-  const { state, signal: externalSignal } = params
+  const { state, signal: externalSignal, props: callerProps } = params
   const maxTurns = params.maxTurns ?? config.maxTurns
   const usageAtStart = { ...state.usage }
 
   const infra = initLoopInfra(state, config, externalSignal)
   const { signal, pipeline, toolMap, toolDefinitions, wrappedToolCall, wrappedModelCall, system } =
     infra
+
+  const props = Object.freeze(callerProps ?? {})
+
+  // 开发模式下校验中间件声明的 propsSchema
+  if (process.env.NODE_ENV !== 'production') {
+    for (const mw of config.middleware) {
+      if (!mw.propsSchema) continue
+      for (const [key, descriptor] of Object.entries(mw.propsSchema)) {
+        if (descriptor.required && !(key in props)) {
+          console.warn(
+            `[mech-code] 中间件 "${mw.name}" 声明了必需的 prop "${key}" 但调用方未提供。` +
+              ` 描述: ${descriptor.description}`,
+          )
+        }
+      }
+    }
+  }
 
   let turnIndex = 0
 
@@ -448,6 +491,7 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     system,
     tools: toolDefinitions,
     lastResponse: undefined,
+    props,
     get turnIndex() {
       return turnIndex
     },
@@ -520,6 +564,8 @@ export async function* runLoopFromCheckpoint(
   const { signal, pipeline, toolMap, toolDefinitions, wrappedToolCall, wrappedModelCall, system } =
     infra
 
+  const props = Object.freeze(params.props ?? {})
+
   let turnIndex = resumeTurnIndex
 
   const ctx: RunContext & { turnIndex: number } = {
@@ -528,6 +574,7 @@ export async function* runLoopFromCheckpoint(
     system,
     tools: toolDefinitions,
     lastResponse: undefined,
+    props,
     get turnIndex() {
       return turnIndex
     },

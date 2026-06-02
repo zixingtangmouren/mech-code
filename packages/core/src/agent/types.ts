@@ -42,6 +42,12 @@ export interface RunParams {
   /** 最大循环轮数，覆盖 AgentConfig.maxTurns */
   maxTurns?: number
   signal?: AbortSignal
+  /**
+   * 调用方传入的只读属性（每次 run 临时有效，不持久化到 checkpoint）。
+   * 用于向中间件传递运行时配置/意图（如 userId、requestId、featureFlags 等）。
+   * 中间件通过 ctx.props 读取，不可修改。
+   */
+  props?: Readonly<Record<string, unknown>>
 }
 
 export interface RunResult {

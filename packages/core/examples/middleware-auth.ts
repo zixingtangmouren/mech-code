@@ -14,11 +14,16 @@
 
 import * as readline from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
-import { Agent, OpenAICompatibleProvider, Middleware, createAgentState } from '../src/index.js'
-import { readFileTool, writeFileTool } from '../src/tools/builtins/index.js'
+import {
+  Agent,
+  OpenAICompatibleProvider,
+  createMiddleware,
+  createAgentState,
+} from '../src/index.js'
 import type { AgentEvent } from '@mech-code/shared'
-import type { ToolCallContext, ToolCallFn } from '../src/index.js'
-import type { Tool, ToolOutput } from '../src/index.js'
+import type { Tool } from '../src/index.js'
+
+const { readFileTool, writeFileTool } = await import('../../tools/src/index.js')
 
 // ─── ANSI 颜色工具 ──────────────────────────────────────────────────────────
 
@@ -40,7 +45,7 @@ const c = {
 // ─── 工具调用鉴权中间件 ───────────────────────────────────────────────────────
 
 /**
- * ToolAuthMiddleware —— 对写入类工具进行交互式鉴权。
+ * 创建工具调用鉴权中间件 —— 对写入类工具进行交互式鉴权。
  *
  * 工作原理：
  * 1. 构造时接收工具列表与共享的 readline 实例（避免多个接口同时监听 stdin）
@@ -49,66 +54,51 @@ const c = {
  * 4. 只读工具（flags.readonly = true）直接放行
  * 5. 写入工具（flags.readonly = false）弹出终端确认，用户拒绝则返回错误
  */
-class ToolAuthMiddleware extends Middleware {
-  name = 'tool-auth'
+function createToolAuthMiddleware(tools: Tool[], rl: readline.Interface) {
+  const readonlyMap = new Map(tools.map((t) => [t.name, t.flags.readonly]))
 
-  /** toolName -> 是否只读 */
-  private readonly readonlyMap: Map<string, boolean>
-  /** 与主循环共享的 readline 接口，避免多个接口同时监听同一 stdin 导致输入错乱 */
-  private readonly rl: readline.Interface
+  return createMiddleware({
+    name: 'tool-auth',
 
-  constructor(tools: Tool[], rl: readline.Interface) {
-    super()
-    // 建立工具名到只读标记的映射，供 wrapToolCall 快速查询
-    this.readonlyMap = new Map(tools.map((t) => [t.name, t.flags.readonly]))
-    this.rl = rl
-  }
+    async wrapToolCall(next, ctx) {
+      const isReadonly = readonlyMap.get(ctx.toolName) ?? true
 
-  /**
-   * 包裹工具调用 —— 核心鉴权逻辑。
-   * 只读工具直接调用 next；写入工具需要用户在终端确认后才放行。
-   *
-   * 注意：agent loop 会在调用此方法前先 yield tool_executing 事件（已展示参数），
-   * 因此这里只展示鉴权确认框，不重复打印参数内容。
-   */
-  async wrapToolCall(next: ToolCallFn, ctx: ToolCallContext): Promise<ToolOutput> {
-    const isReadonly = this.readonlyMap.get(ctx.toolName) ?? true
+      // 只读工具直接放行
+      if (isReadonly) {
+        return next(ctx)
+      }
 
-    // 只读工具直接放行
-    if (isReadonly) {
-      return next(ctx)
-    }
+      // 写入工具：展示鉴权确认框（参数已由 tool_executing 事件渲染，此处不重复）
+      const border = `${c.yellow}${'─'.repeat(40)}${c.reset}`
+      process.stdout.write(`  ${border}\n`)
+      process.stdout.write(
+        `  ${c.bgYellow}${c.black} ⚠ 需要授权 ${c.reset}` +
+          ` ${c.bold}${ctx.toolName}${c.reset} 将执行写入操作\n`,
+      )
+      process.stdout.write(`  ${border}\n`)
 
-    // 写入工具：展示鉴权确认框（参数已由 tool_executing 事件渲染，此处不重复）
-    const border = `${c.yellow}${'─'.repeat(40)}${c.reset}`
-    process.stdout.write(`  ${border}\n`)
-    process.stdout.write(
-      `  ${c.bgYellow}${c.black} ⚠ 需要授权 ${c.reset}` +
-        ` ${c.bold}${ctx.toolName}${c.reset} 将执行写入操作\n`,
-    )
-    process.stdout.write(`  ${border}\n`)
+      let answer: string
+      try {
+        answer = await rl.question(`  ${c.yellow}是否允许？${c.reset} ${c.dim}(y/N)${c.reset} `)
+      } catch {
+        // readline 被关闭时默认拒绝
+        answer = 'n'
+      }
 
-    let answer: string
-    try {
-      answer = await this.rl.question(`  ${c.yellow}是否允许？${c.reset} ${c.dim}(y/N)${c.reset} `)
-    } catch {
-      // readline 被关闭时默认拒绝
-      answer = 'n'
-    }
+      const confirmed = answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes'
 
-    const confirmed = answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes'
+      if (confirmed) {
+        process.stdout.write(`  ${c.green}✓ 已授权${c.reset}\n`)
+        return next(ctx)
+      }
 
-    if (confirmed) {
-      process.stdout.write(`  ${c.green}✓ 已授权${c.reset}\n`)
-      return next(ctx)
-    }
-
-    process.stdout.write(`  ${c.red}✗ 已拒绝，操作已取消${c.reset}\n`)
-    return {
-      content: `用户拒绝了对工具 "${ctx.toolName}" 的调用，操作已取消。`,
-      isError: true,
-    }
-  }
+      process.stdout.write(`  ${c.red}✗ 已拒绝，操作已取消${c.reset}\n`)
+      return {
+        content: `用户拒绝了对工具 "${ctx.toolName}" 的调用，操作已取消。`,
+        isError: true,
+      }
+    },
+  })
 }
 
 // ─── 事件渲染 ────────────────────────────────────────────────────────────────
@@ -192,7 +182,7 @@ async function main(): Promise<void> {
   const rl = readline.createInterface({ input: stdin, output: stdout })
 
   // 创建鉴权中间件，传入共享的 readline 实例
-  const authMiddleware = new ToolAuthMiddleware(tools, rl)
+  const authMiddleware = createToolAuthMiddleware(tools, rl)
 
   // 创建 Provider（DeepSeek 兼容 OpenAI API 格式）
   const provider = new OpenAICompatibleProvider({

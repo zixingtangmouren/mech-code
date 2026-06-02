@@ -57,8 +57,10 @@ export type {
   ModelCallFn,
   ToolCallFn,
   Awaitable,
+  PropDescriptor,
+  MiddlewareInit,
 } from './middleware/types.js'
-export { Middleware } from './middleware/types.js'
+export { Middleware, createMiddleware } from './middleware/types.js'
 export { MiddlewarePipeline } from './middleware/pipeline.js'
 
 // 工具协议

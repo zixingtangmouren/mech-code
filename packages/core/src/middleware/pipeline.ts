@@ -6,7 +6,7 @@ import type {
   ToolCallContext,
 } from './types.js'
 import type { StreamResult } from '../provider/types.js'
-import type { ToolOutput } from '../tools/types.js'
+import type { Tool, ToolOutput } from '../tools/types.js'
 
 /**
  * 中间件管道执行器。
@@ -18,6 +18,24 @@ import type { ToolOutput } from '../tools/types.js'
  */
 export class MiddlewarePipeline {
   constructor(private readonly middlewares: AgentMiddleware[]) {}
+
+  // === 工具收集 ===
+
+  /**
+   * 从所有中间件中收集声明的工具，附带来源中间件名称。
+   * 不做冲突检测 —— 由调用方（initLoopInfra）统一处理。
+   */
+  collectMiddlewareTools(): Array<{ tool: Tool; source: string }> {
+    const result: Array<{ tool: Tool; source: string }> = []
+    for (const mw of this.middlewares) {
+      if (mw.tools?.length) {
+        for (const tool of mw.tools) {
+          result.push({ tool, source: mw.name })
+        }
+      }
+    }
+    return result
+  }
 
   // === Hook 执行器 ===
 

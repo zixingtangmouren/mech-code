@@ -60,4 +60,6 @@ export interface ResumeParams {
   /** 最大轮数（可选，覆盖默认） */
   maxTurns?: number
   signal?: AbortSignal
+  /** 恢复运行时传入的只读属性（同 RunParams.props，不持久化） */
+  props?: Readonly<Record<string, unknown>>
 }
