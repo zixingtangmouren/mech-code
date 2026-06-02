@@ -11,7 +11,8 @@ export function registerChatCommand(program: Command): void {
       const React = await import('react')
       const { App } = await import('../ui/App.js')
       const { loadConfig, createProviderFromConfig } = await import('../config/loader.js')
-      const { createAgent, getBuiltinTools } = await import('@mech-code/core')
+      const { createAgent } = await import('@mech-code/core')
+      const { getBuiltinTools } = await import('@mech-code/tools')
       const { buildSystemPrompt } = await import('../prompts/system.js')
 
       // 加载配置

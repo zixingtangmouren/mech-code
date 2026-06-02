@@ -1,4 +1,4 @@
-import type { Tool } from '../types.js'
+import type { Tool } from '@mech-code/core'
 import { readFileTool } from './read-file.js'
 import { writeFileTool } from './write-file.js'
 import { editFileTool } from './edit-file.js'

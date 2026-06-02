@@ -2,8 +2,8 @@ import { writeFile, stat, mkdir } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { z } from 'zod'
 import { expandPath } from '@mech-code/shared'
-import { defineTool } from '../define.js'
-import type { ReadCacheEntry } from '../types.js'
+import { defineTool } from '@mech-code/core'
+import type { ReadCacheEntry } from '@mech-code/core'
 
 // === 常量 ===
 

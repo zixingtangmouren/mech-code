@@ -2,8 +2,8 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { writeFile, mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { editFileTool } from '../builtins/edit-file.js'
-import type { ToolRunContext, ReadCacheEntry } from '../types.js'
+import { editFileTool } from '../edit-file.js'
+import type { ToolRunContext, ReadCacheEntry } from '@mech-code/core'
 
 // 测试用临时目录
 let testDir: string

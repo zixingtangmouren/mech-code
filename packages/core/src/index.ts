@@ -80,13 +80,6 @@ export {
   getToolDefinitions,
   clearTools,
 } from './tools/registry.js'
-export {
-  readFileTool,
-  writeFileTool,
-  editFileTool,
-  bashTool,
-  getBuiltinTools,
-} from './tools/builtins/index.js'
 
 // 重新导出供外部消费者使用的共享类型
 export type {

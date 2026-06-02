@@ -11,8 +11,8 @@
 
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
-import { defineTool } from '../../define.js'
-import type { ToolPromptContext, ToolRunContext } from '../../types.js'
+import { defineTool } from '@mech-code/core'
+import type { ToolPromptContext, ToolRunContext } from '@mech-code/core'
 import { classifyCommand } from './classifier.js'
 import { execShell, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './executor.js'
 import {
