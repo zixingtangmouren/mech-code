@@ -1,4 +1,4 @@
-# @mech-code/core
+# @mech-code/tools
 
 ## 2.0.0
 
@@ -9,15 +9,5 @@
 ### Patch Changes
 
 - Updated dependencies
+  - @mech-code/core@2.0.0
   - @mech-code/shared@2.0.0
-
-## 1.0.0
-
-### Major Changes
-
-- 首次发布
-
-### Patch Changes
-
-- Updated dependencies
-  - @mech-code/shared@1.0.0
