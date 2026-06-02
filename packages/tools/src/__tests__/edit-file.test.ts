@@ -8,16 +8,16 @@ import type { ToolRunContext, ReadCacheEntry } from '@mech-code/core'
 // 测试用临时目录
 let testDir: string
 let ctx: ToolRunContext
-let readFileState: Map<string, ReadCacheEntry>
+let readFileState: Record<string, ReadCacheEntry>
 
 beforeEach(async () => {
   testDir = join(tmpdir(), `edit-file-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   await mkdir(testDir, { recursive: true })
-  readFileState = new Map()
+  readFileState = {}
   ctx = {
     cwd: testDir,
     signal: new AbortController().signal,
-    metadata: { __readFileState: readFileState },
+    store: { readFileState },
   }
 })
 
@@ -30,12 +30,12 @@ async function createTestFile(name: string, content: string) {
   const filePath = join(testDir, name)
   await writeFile(filePath, content, 'utf-8')
   const stats = await stat(filePath)
-  readFileState.set(filePath, {
+  readFileState[filePath] = {
     timestamp: Math.floor(stats.mtimeMs),
     offset: undefined,
     limit: undefined,
     content,
-  })
+  }
   return filePath
 }
 
@@ -88,7 +88,7 @@ describe('edit_file', () => {
       expect(result.content).toContain('3 处匹配')
 
       // 验证缓存内容已更新
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached?.content).toBe('bar\nbar\nbar\n')
     })
   })
@@ -150,19 +150,20 @@ describe('edit_file', () => {
       expect(result.content).toContain('尚未被读取')
     })
 
-    it('无 readFileState 时跳过校验（向后兼容）', async () => {
+    it('空 store 会初始化 readFileState 并执行读前置校验', async () => {
       await writeFile(join(testDir, 'test.ts'), 'hello', 'utf-8')
       const ctxNoState: ToolRunContext = {
         cwd: testDir,
         signal: new AbortController().signal,
-        metadata: {},
+        store: {},
       }
       const result = await editFileTool.execute(
         { path: 'test.ts', old_string: 'hello', new_string: 'world', replace_all: false },
         ctxNoState,
       )
-      expect(result.isError).toBeUndefined()
-      expect(result.content).toContain('已编辑')
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('尚未被读取')
+      expect(ctxNoState.store['readFileState']).toEqual({})
     })
   })
 
@@ -172,11 +173,11 @@ describe('edit_file', () => {
       await writeFile(filePath, 'original', 'utf-8')
 
       // 注册一个过时的 timestamp（不带 content）
-      readFileState.set(filePath, {
+      readFileState[filePath] = {
         timestamp: 0, // 很久以前
         offset: undefined,
         limit: undefined,
-      })
+      }
 
       const result = await editFileTool.execute(
         { path: 'modified.ts', old_string: 'original', new_string: 'changed', replace_all: false },
@@ -191,12 +192,12 @@ describe('edit_file', () => {
       await writeFile(filePath, 'unchanged content', 'utf-8')
 
       // 注册过时 timestamp 但带正确 content
-      readFileState.set(filePath, {
+      readFileState[filePath] = {
         timestamp: 0, // 过时
         offset: undefined,
         limit: undefined,
         content: 'unchanged content',
-      })
+      }
 
       const result = await editFileTool.execute(
         { path: 'touched.ts', old_string: 'unchanged', new_string: 'changed', replace_all: false },
@@ -219,7 +220,7 @@ describe('edit_file', () => {
         },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached).toBeDefined()
       expect(cached!.content).toBe('const x = 2')
       expect(cached!.offset).toBeUndefined()
@@ -307,7 +308,7 @@ describe('edit_file', () => {
         cwd: '/workspace',
         availableTools: ['read_file', 'edit_file'],
         turnIndex: 1,
-        metadata: {},
+        store: {},
       })
       expect(prompt).toContain('/workspace')
       expect(prompt).toContain('read_file')
@@ -377,7 +378,7 @@ describe('edit_file', () => {
         },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       // new_string 中的直引号应被转为弯引号
       expect(cached?.content).toBe('title: \u201cNew Title\u201d\n')
     })
@@ -396,7 +397,7 @@ describe('edit_file', () => {
         },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached?.content).toBe('He said \u201cdon\u2019t panic\u201d\n')
     })
   })
@@ -408,7 +409,7 @@ describe('edit_file', () => {
         { path: 'trail.ts', old_string: 'line2', new_string: '', replace_all: false },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached?.content).toBe('line1\nline3\n')
     })
 
@@ -418,7 +419,7 @@ describe('edit_file', () => {
         { path: 'trail2.ts', old_string: 'line2\n', new_string: '', replace_all: false },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached?.content).toBe('line1\nline3\n')
     })
 
@@ -428,7 +429,7 @@ describe('edit_file', () => {
         { path: 'trail3.ts', old_string: 'line2', new_string: '', replace_all: false },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       // 最后一行后面没有换行，不会删多
       expect(cached?.content).toBe('line1\n')
     })
@@ -439,7 +440,7 @@ describe('edit_file', () => {
         { path: 'trail4.ts', old_string: 'bbb', new_string: 'xxx', replace_all: false },
         ctx,
       )
-      const cached = readFileState.get(filePath)
+      const cached = readFileState[filePath]
       expect(cached?.content).toBe('aaa\nxxx\nccc\n')
     })
   })

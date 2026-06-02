@@ -382,7 +382,7 @@ interface MiddlewareContext {
   messages: Message[]
   system: string
   tools: ToolDefinition[]
-  metadata: Map<string, unknown>
+  store: Record<string, unknown>
 
   // 只读
   readonly turnIndex: number

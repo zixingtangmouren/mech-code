@@ -245,8 +245,8 @@ Responsibility boundary: **hooks only read/write state; wraps only wrap behavior
 ```ts
 interface AgentMiddleware {
   name: string
-  /** Public state: auto-synced to AgentState.middlewareStates; readable by other middleware */
-  state?: Record<string, unknown>
+  /** Default shared state: merged into AgentState.store; readable and writable by middleware/tools */
+  store?: Record<string, unknown>
 
   // === Hook mode: observe and modify state ===
   beforeAgent?(ctx: RunContext): Awaitable<void> // run start — initialize
@@ -268,17 +268,17 @@ import { Middleware } from '@mech-code/core'
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
 
-  // Public state: auto-synced to AgentState, readable by other middleware
-  state = { totalInputTokens: 0, totalOutputTokens: 0 }
+  // Default shared state: bound to AgentState.store at runtime
+  store = { totalInputTokens: 0, totalOutputTokens: 0 }
 
   // Private state: only visible to this instance
   private threshold = 100_000
 
   afterModel(ctx: RunContext) {
     const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    this.state.totalInputTokens += inputTokens
-    this.state.totalOutputTokens += outputTokens
-    if (this.state.totalInputTokens > this.threshold) {
+    this.store.totalInputTokens += inputTokens
+    this.store.totalOutputTokens += outputTokens
+    if (this.store.totalInputTokens > this.threshold) {
       console.warn('Total input tokens exceeded threshold')
     }
   }
@@ -450,7 +450,7 @@ Agent state is held externally and passed into every `run()` call. The Agent mut
 
 ```ts
 const state = createAgentState()
-// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map(), middlewareStates: {} }
+// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, store: {} }
 
 // First turn
 state.messages.push({ role: 'user', content: 'List the files in src/' })

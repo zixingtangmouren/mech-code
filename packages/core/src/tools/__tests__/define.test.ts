@@ -8,7 +8,7 @@ import type { ToolRunContext } from '../types.js'
 const mockCtx: ToolRunContext = {
   cwd: '/tmp',
   signal: new AbortController().signal,
-  metadata: {},
+  store: {},
 }
 
 describe('defineTool', () => {
@@ -38,7 +38,7 @@ describe('defineTool', () => {
         return { content: '' }
       },
     })
-    expect(tool.getPrompt({ cwd: '/', availableTools: [], turnIndex: 0, metadata: {} })).toBeNull()
+    expect(tool.getPrompt({ cwd: '/', availableTools: [], turnIndex: 0, store: {} })).toBeNull()
   })
 
   it('validateInput 默认返回 valid: true', async () => {
@@ -92,7 +92,7 @@ describe('defineTool', () => {
       },
     })
 
-    const result = tool.getPrompt({ cwd: '/app', availableTools: [], turnIndex: 0, metadata: {} })
+    const result = tool.getPrompt({ cwd: '/app', availableTools: [], turnIndex: 0, store: {} })
     expect(result).toBe('执行命令（当前目录: /app）')
   })
 

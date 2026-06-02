@@ -44,11 +44,11 @@ abstract class AgentMiddleware {
   abstract name: string
 
   /**
-   * 公有状态（保留字段）。
-   * 声明在此的数据会自动同步到 AgentState.middlewareStates[name] 中，
-   * 其他中间件可通过 AgentState 读取。支持序列化持久化。
+   * 默认共享状态（保留字段）。
+   * 声明在此的数据会合并到 AgentState.store 中，
+   * 其他中间件和工具可通过 AgentState 读取。支持序列化持久化。
    */
-  state: Record<string, unknown> = {}
+  store: Record<string, unknown> = {}
 
   // === Hook 式：状态观察与修改 ===
 
@@ -187,30 +187,31 @@ interface ToolCallContext extends RunContext {
 
 中间件的状态分为两类：
 
-| 类型         | 存储位置                          | 可见性         | 是否持久化                   | 示例                              |
-| ------------ | --------------------------------- | -------------- | ---------------------------- | --------------------------------- |
-| **私有状态** | class 实例属性                    | 仅中间件自身   | 否（随实例生命周期）         | 内部计数器、配置参数、prompt 模板 |
-| **公有状态** | `this.state`（同步到 AgentState） | 所有中间件可读 | 是（跟随 AgentState 序列化） | 摘要文本、压缩计数、统计数据      |
+| 类型         | 存储位置                                | 可见性                 | 是否持久化                   | 示例                              |
+| ------------ | --------------------------------------- | ---------------------- | ---------------------------- | --------------------------------- |
+| **私有状态** | class 实例属性                          | 仅中间件自身           | 否（随实例生命周期）         | 内部计数器、配置参数、prompt 模板 |
+| **共享状态** | `this.store`（绑定到 AgentState.store） | 所有中间件和工具可读写 | 是（跟随 AgentState 序列化） | 摘要文本、压缩计数、统计数据      |
 
 ### 6.2 同步机制：共享引用
 
-采用最简单的共享引用方案——框架在创建中间件时，将 `middleware.state` 直接挂载到 `AgentState.middlewareStates[name]`，两者引用同一对象：
+采用最简单的共享引用方案——框架在 run 开始时，将 `middleware.store` 的默认值合并到 `AgentState.store`，再把 `middleware.store` 绑定为同一个共享引用：
 
 ```ts
-// Agent 创建阶段（框架内部逻辑）
+// Agent run 开始阶段（框架内部逻辑）
 const mw = new SummarizerMiddleware()
-agentState.middlewareStates[mw.name] = mw.state // 共享同一引用
+for (const [key, value] of Object.entries(mw.store)) {
+  if (!(key in agentState.store)) agentState.store[key] = value
+}
+mw.store = agentState.store
 
-// 中间件内部读写 this.state，外部通过 agentState.middlewareStates 也能看到
+// 中间件内部读写 this.store，工具和外部通过 agentState.store 也能看到
 ```
 
-Session 恢复时，从持久化的 AgentState 反向灌入：
+Session 恢复时，反序列化后的 `AgentState.store` 仍作为唯一共享状态：
 
 ```ts
-// 从持久化数据恢复
-Object.assign(mw.state, agentState.middlewareStates[mw.name])
-// 重新建立引用
-agentState.middlewareStates[mw.name] = mw.state
+const agentState = deserializeAgentState(checkpoint.state)
+mw.store = agentState.store
 ```
 
 ### 6.3 AgentState 扩展
@@ -219,17 +220,16 @@ agentState.middlewareStates[mw.name] = mw.state
 interface AgentState {
   messages: AgentMessage[]
   usage: Usage
-  metadata: Map<string, unknown>
-  /** 各中间件的公有状态（按中间件 name 索引，支持序列化持久化） */
-  middlewareStates: Record<string, Record<string, unknown>>
+  /** 中间件和工具共享读写的持久化状态 */
+  store: Record<string, unknown>
 }
 ```
 
 ### 6.4 约束
 
-- `state` 字段的内容**必须可 JSON 序列化**（不能包含 Map、Set、函数、类实例等）
-- 中间件的 `name` 必须唯一，作为 `middlewareStates` 的 key
-- 中间件之间读取彼此的公有状态通过 `ctx.state.middlewareStates[name]` 访问
+- `store` 字段的内容**必须可 JSON 序列化**（不能包含 Map、Set、函数、类实例等）
+- 中间件的 `store` 默认值会合并到 `AgentState.store`，但不覆盖已有 key
+- 中间件和工具通过 `ctx.state.store` / `ToolRunContext.store` 共享状态
 
 ### 6.5 完整示例
 
@@ -237,8 +237,8 @@ interface AgentState {
 class SummarizerMiddleware extends AgentMiddleware {
   name = 'summarizer'
 
-  // === 公有状态：自动同步到 AgentState，其他中间件可读，支持持久化 ===
-  state = {
+  // === 默认共享状态：合并到 AgentState.store，其他中间件和工具可读写 ===
+  store = {
     summary: '',
     compressedCount: 0,
     lastSummarizedAt: -1,
@@ -253,15 +253,15 @@ class SummarizerMiddleware extends AgentMiddleware {
     if (ctx.callMessages.length > this.compressionThreshold) {
       // 私有配置驱动逻辑
       const newSummary = this.doSummarize(ctx.callMessages, this.summaryPrompt)
-      // 写入公有状态（自动反映到 AgentState）
-      this.state.summary = newSummary
-      this.state.compressedCount++
-      this.state.lastSummarizedAt = ctx.turnIndex
+      // 写入共享状态（自动反映到 AgentState.store）
+      this.store.summary = newSummary
+      this.store.compressedCount++
+      this.store.lastSummarizedAt = ctx.turnIndex
     }
 
     // 将摘要注入 system prompt
-    if (this.state.summary) {
-      ctx.system += `\n\nConversation summary:\n${this.state.summary}`
+    if (this.store.summary) {
+      ctx.system += `\n\nConversation summary:\n${this.store.summary}`
     }
   }
 }
@@ -269,14 +269,14 @@ class SummarizerMiddleware extends AgentMiddleware {
 // 其他中间件读取摘要
 class AnalyticsMiddleware extends AgentMiddleware {
   name = 'analytics'
-  state = { totalTurns: 0 }
+  store = { totalTurns: 0 }
 
   afterModel(ctx: RunContext) {
-    this.state.totalTurns++
+    this.store.totalTurns++
     // 读取 summarizer 的公有状态
-    const summarizerState = ctx.state.middlewareStates['summarizer']
-    if (summarizerState?.summary) {
-      console.log(`Current summary length: ${summarizerState.summary.length}`)
+    const summary = ctx.state.store.summary
+    if (typeof summary === 'string') {
+      console.log(`Current summary length: ${summary.length}`)
     }
   }
 }

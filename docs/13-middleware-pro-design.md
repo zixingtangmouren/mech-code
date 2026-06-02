@@ -41,7 +41,7 @@ export interface AgentMiddleware {
   /** 中间件声明的工具（可选），自动合并到 Agent 可用工具集 */
   tools?: Tool[]
 
-  state?: Record<string, unknown>
+  store?: Record<string, unknown>
   // ... 现有 hooks 不变
 }
 ```
@@ -89,11 +89,11 @@ collectMiddlewareTools(): Array<{ tool: Tool; source: string }> {
 
 #### 2.1 核心概念
 
-|        | State (`mw.state`)                    | Props (`ctx.props`)             |
+|        | Store (`mw.store`)                    | Props (`ctx.props`)             |
 | ------ | ------------------------------------- | ------------------------------- |
 | 谁写   | 中间件自己                            | 调用方 (`agent.run({ props })`) |
-| 谁读   | 中间件自己 + 其他中间件               | 中间件（只读）                  |
-| 持久化 | 是（`middlewareStates` → checkpoint） | 否（每次 run 传入）             |
+| 谁读   | 中间件自己 + 其他中间件 + 工具        | 中间件（只读）                  |
+| 持久化 | 是（`AgentState.store` → checkpoint） | 否（每次 run 传入）             |
 | 语义   | 事实（"发生了什么"）                  | 配置/意图（"你想要什么"）       |
 
 #### 2.2 `RunParams` / `ResumeParams` 新增 `props`

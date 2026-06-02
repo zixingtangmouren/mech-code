@@ -38,21 +38,9 @@ export class Agent {
   /**
    * 流式运行 Agent，逐事件 yield（适合实时 UI 渲染）。
    * state.messages 和 state.usage 在运行过程中直接被修改。
-   * run() 开始前会将各中间件的 state 与 AgentState.middlewareStates 建立共享引用。
+   * run() 开始前会将各中间件的默认 store 合并并绑定到 AgentState.store。
    */
   async *run(params: RunParams): AsyncIterable<AgentEvent> {
-    // 将各中间件的公有状态绑定到 AgentState（共享引用）
-    for (const mw of this._middleware) {
-      if (mw.state !== undefined) {
-        const existing = params.state.middlewareStates[mw.name]
-        if (existing) {
-          // session 恢复场景：将持久化的状态回灌到中间件实例
-          Object.assign(mw.state, existing)
-        }
-        // 建立共享引用，后续中间件对 this.state 的修改自动反映到 AgentState
-        params.state.middlewareStates[mw.name] = mw.state
-      }
-    }
     yield* runLoop(params, {
       provider: this._provider,
       tools: this._tools,
@@ -67,16 +55,6 @@ export class Agent {
    * 从 checkpoint 恢复运行 Agent，先处理 pending tool calls 再继续循环。
    */
   async *resume(params: ResumeParams): AsyncIterable<AgentEvent> {
-    // 将各中间件的公有状态绑定到从 checkpoint 恢复的 state
-    const restoredState = params.checkpoint.state
-    for (const mw of this._middleware) {
-      if (mw.state !== undefined) {
-        const existing = restoredState.middlewareStates[mw.name]
-        if (existing) {
-          Object.assign(mw.state, existing)
-        }
-      }
-    }
     yield* runLoopFromCheckpoint(params, {
       provider: this._provider,
       tools: this._tools,

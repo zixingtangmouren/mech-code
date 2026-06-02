@@ -24,8 +24,8 @@ export interface ToolRunContext {
   cwd: string
   /** 中止信号，工具应在收到信号时尽早终止 */
   signal: AbortSignal
-  /** 运行时元数据（session 状态、环境变量、用户配置等） */
-  metadata: Record<string, unknown>
+  /** 共享持久状态（session 状态、环境变量、用户配置等） */
+  store: Record<string, unknown>
 }
 
 // === 提示词生成上下文 ===
@@ -40,8 +40,8 @@ export interface ToolPromptContext {
   availableTools: string[]
   /** 当前 turn 序号 */
   turnIndex: number
-  /** 用户/系统注入的自定义元数据 */
-  metadata: Record<string, unknown>
+  /** 共享持久状态 */
+  store: Record<string, unknown>
 }
 
 // === 工具输出 ===
@@ -71,7 +71,7 @@ export interface ValidationResult {
 
 /**
  * 文件读取缓存条目，用于 read_file / edit_file 工具的读写一致性保证。
- * 通过 ToolRunContext.metadata['__readFileState'] 传递给工具。
+ * 通过 ToolRunContext.store.readFileState 传递给工具。
  */
 export interface ReadCacheEntry {
   /** 文件读取/写入时的 mtime（毫秒，Math.floor） */

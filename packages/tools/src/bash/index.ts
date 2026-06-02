@@ -3,7 +3,7 @@
  *
  * 为 Agent 提供通用的 Shell 命令执行能力，支持：
  * - 超时控制与 AbortSignal 取消
- * - 跨调用工作目录持久化（通过 metadata）
+ * - 跨调用工作目录持久化（通过 store）
  * - 退出码语义化（grep/diff/find 等命令的特殊语义）
  * - 超长输出截断（首尾保留策略）
  * - 命令风险分类（供权限中间件消费）
@@ -23,20 +23,15 @@ import {
 } from './output.js'
 import { isCommandError } from './semantics.js'
 
-// === 常量 ===
-
-/** 存储 shell cwd 状态的 metadata key */
-const SHELL_CWD_KEY = '__shellCwd'
-
 // === 辅助函数 ===
 
 /**
  * 解析本次命令使用的工作目录。
- * 优先级：参数 cwd > metadata 缓存 cwd > context.cwd（项目根）
+ * 优先级：参数 cwd > store 缓存 cwd > context.cwd（项目根）
  */
 function resolveShellCwd(inputCwd: string | undefined, context: ToolRunContext): string {
   if (inputCwd) return inputCwd
-  const cached = context.metadata[SHELL_CWD_KEY]
+  const cached = context.store['shellCwd']
   if (typeof cached === 'string' && cached) return cached
   return context.cwd
 }
@@ -170,7 +165,7 @@ export const bashTool = defineTool({
     if (needsCwdDetection) {
       const newCwd = extractCwdFromOutput(result.stdout)
       if (newCwd) {
-        context.metadata[SHELL_CWD_KEY] = newCwd
+        context.store['shellCwd'] = newCwd
       }
     }
 

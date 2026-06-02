@@ -62,16 +62,11 @@ export interface PendingToolCall {
   input: Record<string, unknown>
 }
 
-/**
- * AgentState 的可序列化形式（metadata Map 转为普通对象）。
- * 用于 checkpoint 的持久化与恢复。
- */
+/** AgentState 的可序列化形式，用于 checkpoint 的持久化与恢复。 */
 export interface SerializableAgentState {
   messages: (Message & { _compressed?: true })[]
   usage: Usage
-  /** metadata Map 序列化为 plain object */
-  metadata: Record<string, unknown>
-  middlewareStates: Record<string, Record<string, unknown>>
+  store: Record<string, unknown>
 }
 
 /**

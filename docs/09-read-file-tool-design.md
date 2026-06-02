@@ -407,7 +407,7 @@ interface ReadFileConfig {
 interface ToolExecContext {
   cwd: string
   signal: AbortSignal
-  metadata: Record<string, unknown>
+  store: Record<string, unknown>
   /** 文件读取状态缓存，用于去重（由 Agent Loop 维护） */
   readFileState?: Map<string, ReadCacheEntry>
 }

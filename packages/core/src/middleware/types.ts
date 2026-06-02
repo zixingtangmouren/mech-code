@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '@mech-code/shared'
-import type { AgentMessage, AgentState } from '../agent/types.js'
+import type { AgentMessage, AgentState } from '../agent/state.js'
 import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
 import type { Tool, ToolOutput } from '../tools/types.js'
 
@@ -33,11 +33,10 @@ export interface AgentMiddleware {
   tools?: Tool[]
 
   /**
-   * 公有状态（可选）。
-   * 声明在此的数据会自动同步到 AgentState.middlewareStates[name] 中，
-   * 其他中间件可通过 ctx.state.middlewareStates 读取，支持序列化持久化。
+   * 默认共享状态（可选）。
+   * 声明在此的数据会合并到 AgentState.store 中，并与其他中间件/工具共享。
    */
-  state?: Record<string, unknown>
+  store?: Record<string, unknown>
 
   /**
    * 声明中间件期望的 props（文档化 + 开发模式 warning）。
@@ -68,12 +67,12 @@ export interface AgentMiddleware {
 
 /**
  * 有状态中间件的基类。
- * 继承此类可通过 state 字段声明公有状态，框架会自动同步到 AgentState.middlewareStates。
+ * 继承此类可通过 store 字段声明默认共享状态，框架会自动绑定到 AgentState.store。
  * 无状态的简单中间件可直接使用 AgentMiddleware 接口（对象字面量形式）。
  */
 export abstract class Middleware implements AgentMiddleware {
   abstract name: string
-  state: Record<string, unknown> = {}
+  store: Record<string, unknown> = {}
   tools?: Tool[]
   propsSchema?: Record<string, PropDescriptor>
 }
@@ -81,15 +80,15 @@ export abstract class Middleware implements AgentMiddleware {
 // === 工厂函数 ===
 
 /** createMiddleware 的初始化参数 */
-export type MiddlewareInit = Omit<AgentMiddleware, 'state'> & {
-  /** 初始状态（会被深克隆，确保多次调用返回独立实例） */
-  state?: Record<string, unknown>
+export type MiddlewareInit = Omit<AgentMiddleware, 'store'> & {
+  /** 默认共享状态（会被深克隆，确保多次调用返回独立实例） */
+  store?: Record<string, unknown>
 }
 
 /**
  * createMiddleware —— 中间件工厂函数。
  *
- * 相比对象字面量：对 state 做深克隆保护，避免多实例共享状态。
+ * 相比对象字面量：对 store 做深克隆保护，避免多实例共享默认状态。
  * 相比继承 Middleware 基类：无需 class + constructor，适合简单场景。
  *
  * @example
@@ -102,19 +101,19 @@ export type MiddlewareInit = Omit<AgentMiddleware, 'state'> & {
  * // 带状态 + 工具的自包含中间件
  * const counter = createMiddleware({
  *   name: 'call-counter',
- *   state: { count: 0 },
+ *   store: { count: 0 },
  *   tools: [checkCountTool],
  *   wrapToolCall(next, ctx) {
- *     this.state!.count = (this.state!.count as number) + 1
+ *     this.store!.count = (this.store!.count as number) + 1
  *     return next(ctx)
  *   },
  * })
  */
 export function createMiddleware(init: MiddlewareInit): AgentMiddleware {
-  const { state: rawState, ...rest } = init
+  const { store: rawStore, ...rest } = init
   return {
     ...rest,
-    state: rawState ? structuredClone(rawState) : undefined,
+    store: rawStore ? structuredClone(rawStore) : undefined,
   }
 }
 

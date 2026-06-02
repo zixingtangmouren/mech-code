@@ -57,7 +57,7 @@ const inputSchema = z.object({
 
 ```typescript
 // 从 metadata 中获取文件读取状态
-const readFileState = getReadFileState(ctx.metadata)
+const readFileState = getReadFileState(ctx.store)
 if (readFileState && !readFileState.has(resolvedPath)) {
   // old_string 为空（创建新文件）时免检
   if (input.old_string !== '') {
@@ -299,7 +299,7 @@ validateInput(input) {
 
 ## 与 readFileState 的联动
 
-`read_file` 和 `edit_file` 通过共享的 `readFileState`（存放于 `ToolRunContext.metadata['__readFileState']`）形成闭环：
+`read_file` 和 `edit_file` 通过共享的 `readFileState`（存放于 `ToolRunContext.store.readFileState`）形成闭环：
 
 ```mermaid
 sequenceDiagram

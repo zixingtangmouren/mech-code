@@ -1,5 +1,6 @@
 import type { AgentEvent, AssistantContentBlock, SessionCheckpoint } from '@mech-code/shared'
-import type { AgentState, RunParams, RunResult } from './types.js'
+import type { AgentState } from './state.js'
+import type { RunParams, RunResult } from './types.js'
 import type { RunContext, ToolCallContext, ModelCallFn, ToolCallFn } from '../middleware/types.js'
 import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
 import type { Tool, ToolOutput } from '../tools/types.js'
@@ -8,12 +9,8 @@ import { MiddlewarePipeline } from '../middleware/pipeline.js'
 import { normalizeMessages } from '../message/normalize.js'
 import { buildChatParams } from '../message/builder.js'
 import type { AgentMiddleware } from '../middleware/types.js'
-import {
-  SuspendSignal,
-  isSuspendSignal,
-  serializeAgentState,
-  deserializeAgentState,
-} from './hitl.js'
+import { SuspendSignal, isSuspendSignal } from './hitl.js'
+import { serializeAgentState, deserializeAgentState } from './state.js'
 import type { ResumeParams, ToolCallDecision } from './hitl.js'
 
 /** Agent Loop 的运行配置（从 AgentConfig 解构而来） */
@@ -347,6 +344,25 @@ async function* runMainLoop(
 // 初始化辅助（runLoop 和 runLoopFromCheckpoint 共享）
 // ============================================================
 
+const middlewareStoreDefaults = new WeakMap<AgentMiddleware, Record<string, unknown>>()
+
+function bindMiddlewareStores(state: AgentState, middleware: AgentMiddleware[]): void {
+  for (const mw of middleware) {
+    if (mw.store === undefined) continue
+    let defaults = middlewareStoreDefaults.get(mw)
+    if (!defaults) {
+      defaults = structuredClone(mw.store)
+      middlewareStoreDefaults.set(mw, defaults)
+    }
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!(key in state.store)) {
+        state.store[key] = structuredClone(value)
+      }
+    }
+    mw.store = state.store
+  }
+}
+
 /** 初始化 Loop 运行时所需的公共基础设施 */
 function initLoopInfra(
   state: AgentState,
@@ -354,6 +370,8 @@ function initLoopInfra(
   externalSignal: AbortSignal | undefined,
 ) {
   const { provider, tools, system, middleware, cwd } = config
+
+  bindMiddlewareStores(state, middleware)
 
   const controller = new AbortController()
   if (externalSignal) {
@@ -407,14 +425,10 @@ function initLoopInfra(
     if (!validation.valid) {
       return { content: `输入校验失败: ${validation.error ?? '未知错误'}`, isError: true }
     }
-    // 惰性初始化 readFileState（跨 turn 持久化，供 read_file 工具去重）
-    if (!toolCtx.state.metadata.has('__readFileState')) {
-      toolCtx.state.metadata.set('__readFileState', new Map<string, unknown>())
-    }
     return tool.execute(toolCtx.toolInput, {
       cwd,
       signal: toolCtx.signal,
-      metadata: Object.fromEntries(toolCtx.state.metadata),
+      store: toolCtx.state.store,
     })
   }
 

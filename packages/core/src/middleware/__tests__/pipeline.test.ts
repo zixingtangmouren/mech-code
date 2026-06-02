@@ -3,7 +3,7 @@ import { MiddlewarePipeline } from '../pipeline.js'
 import { createMiddleware } from '../types.js'
 import type { AgentMiddleware, RunContext } from '../types.js'
 import type { Tool, ToolOutput } from '../../tools/types.js'
-import type { AgentState } from '../../agent/types.js'
+import type { AgentState } from '../../agent/state.js'
 import type { LLMProvider } from '../../provider/types.js'
 
 // === 辅助工厂 ===
@@ -29,8 +29,7 @@ function createMockRunContext(overrides?: Partial<RunContext>): RunContext {
   const state: AgentState = {
     messages: [],
     usage: { inputTokens: 0, outputTokens: 0 },
-    metadata: new Map(),
-    middlewareStates: {},
+    store: {},
   }
   return {
     state,
@@ -182,50 +181,50 @@ describe('createMiddleware', () => {
 
     expect(mw.name).toBe('test-mw')
     expect(typeof mw.beforeModel).toBe('function')
-    expect(mw.state).toBeUndefined()
+    expect(mw.store).toBeUndefined()
   })
 
-  it('state 被深克隆，修改原始对象不影响中间件实例', () => {
-    const originalState = { count: 0, nested: { value: 'hello' } }
+  it('store 被深克隆，修改原始对象不影响中间件实例', () => {
+    const originalStore = { count: 0, nested: { value: 'hello' } }
     const mw = createMiddleware({
-      name: 'cloned-state',
-      state: originalState,
+      name: 'cloned-store',
+      store: originalStore,
     })
 
     // 修改原始对象
-    originalState.count = 99
-    originalState.nested.value = 'modified'
+    originalStore.count = 99
+    originalStore.nested.value = 'modified'
 
     // 中间件实例不受影响
-    expect(mw.state!.count).toBe(0)
-    expect((mw.state!.nested as { value: string }).value).toBe('hello')
+    expect(mw.store!.count).toBe(0)
+    expect((mw.store!.nested as { value: string }).value).toBe('hello')
   })
 
-  it('多次调用返回独立的 state 实例', () => {
+  it('多次调用返回独立的 store 实例', () => {
     function makeCounter() {
       return createMiddleware({
         name: 'counter',
-        state: { count: 0 },
+        store: { count: 0 },
       })
     }
 
     const mw1 = makeCounter()
     const mw2 = makeCounter()
 
-    mw1.state!.count = 5
-    expect(mw2.state!.count).toBe(0)
+    mw1.store!.count = 5
+    expect(mw2.store!.count).toBe(0)
   })
 
-  it('无 state 时 state 为 undefined', () => {
+  it('无 store 时 store 为 undefined', () => {
     const mw = createMiddleware({ name: 'stateless' })
-    expect(mw.state).toBeUndefined()
+    expect(mw.store).toBeUndefined()
   })
 
   it('hooks 正常绑定和执行', async () => {
     const calls: string[] = []
     const mw = createMiddleware({
       name: 'hooks-test',
-      state: { initialized: false },
+      store: { initialized: false },
       beforeAgent(_ctx) {
         calls.push('beforeAgent')
       },

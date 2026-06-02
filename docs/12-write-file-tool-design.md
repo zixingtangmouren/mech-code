@@ -55,7 +55,7 @@ const inputSchema = z.object({
 与 Claude Code 相同的策略——防止 LLM 在未理解文件内容的情况下盲目覆写，避免数据丢失。
 
 ```typescript
-const readFileState = getReadFileState(ctx.metadata)
+const readFileState = getReadFileState(ctx.store)
 const resolvedPath = resolve(ctx.cwd, expandPath(input.path))
 
 // 检查文件是否存在
@@ -336,7 +336,7 @@ sequenceDiagram
 
 ### Phase 2：读写一致性
 
-- 接入 `readFileState`（通过 `ctx.metadata['__readFileState']`）
+- 接入 `readFileState`（通过 `ctx.store.readFileState`）
 - 读前置校验
 - 时间戳校验
 - 写后更新状态

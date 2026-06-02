@@ -285,16 +285,16 @@ function truncateOutput(
 
 ### 5.1 设计方案
 
-工作目录通过 `ToolRunContext.metadata['__shellCwd']` 持久化，跨多次工具调用保持：
+工作目录通过 `ToolRunContext.store.shellCwd` 持久化，跨多次工具调用保持：
 
 ```typescript
 /**
  * 获取当前 shell 工作目录。
- * 优先级：参数 cwd > metadata 中缓存的 cwd > context.cwd（项目根）
+ * 优先级：参数 cwd > store 中缓存的 cwd > context.cwd（项目根）
  */
 function resolveShellCwd(input: BashInput, context: ToolRunContext): string {
   if (input.cwd) return input.cwd
-  const cached = context.metadata['__shellCwd'] as string | undefined
+  const cached = context.store.shellCwd as string | undefined
   return cached ?? context.cwd
 }
 ```

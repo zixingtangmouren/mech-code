@@ -1,5 +1,4 @@
 import type { SessionCheckpoint } from '@mech-code/shared'
-import type { AgentState } from './types.js'
 
 export type { SessionCheckpoint, SerializableAgentState, PendingToolCall } from '@mech-code/shared'
 
@@ -23,26 +22,6 @@ export class SuspendSignal extends Error {
 /** 判断是否为 SuspendSignal（用于 catch 块中判断） */
 export function isSuspendSignal(err: unknown): err is SuspendSignal {
   return err instanceof SuspendSignal
-}
-
-/** 将 AgentState 序列化为可 JSON 化的形式 */
-export function serializeAgentState(state: AgentState): SessionCheckpoint['state'] {
-  return {
-    messages: structuredClone(state.messages),
-    usage: { ...state.usage },
-    metadata: Object.fromEntries(state.metadata),
-    middlewareStates: structuredClone(state.middlewareStates),
-  }
-}
-
-/** 将序列化的 state 还原为 AgentState */
-export function deserializeAgentState(serialized: SessionCheckpoint['state']): AgentState {
-  return {
-    messages: serialized.messages,
-    usage: serialized.usage,
-    metadata: new Map(Object.entries(serialized.metadata)),
-    middlewareStates: serialized.middlewareStates,
-  }
 }
 
 /** 人工对单个工具调用的决策 */

@@ -36,8 +36,8 @@ interface ToolPromptContext {
   availableTools: string[]
   /** Agent 当前 turn 序号 */
   turnIndex: number
-  /** 用户/系统注入的自定义元数据 */
-  metadata: Record<string, unknown>
+  /** 共享持久状态 */
+  store: Record<string, unknown>
 }
 ```
 
@@ -49,8 +49,8 @@ interface ToolExecContext {
   cwd: string
   /** 中止信号 */
   signal: AbortSignal
-  /** 运行时元数据（session 状态、环境变量等） */
-  metadata: Record<string, unknown>
+  /** 共享持久状态（session 状态、环境变量等） */
+  store: Record<string, unknown>
 }
 ```
 

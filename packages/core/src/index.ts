@@ -1,16 +1,13 @@
 // Agent 模块
 export { Agent, createAgent } from './agent/agent.js'
 export type { AgentConfig } from './agent/agent.js'
-export type { RunParams, RunResult, AgentState, AgentMessage } from './agent/types.js'
-export { createAgentState } from './agent/types.js'
+export type { RunParams, RunResult } from './agent/types.js'
+export type { AgentState, AgentMessage } from './agent/state.js'
+export { createAgentState } from './agent/state.js'
 
 // HITL（Human-in-the-Loop）暂停与恢复
-export {
-  SuspendSignal,
-  isSuspendSignal,
-  serializeAgentState,
-  deserializeAgentState,
-} from './agent/hitl.js'
+export { SuspendSignal, isSuspendSignal } from './agent/hitl.js'
+export { serializeAgentState, deserializeAgentState } from './agent/state.js'
 export type { ResumeParams, ToolCallDecision } from './agent/hitl.js'
 
 // Provider 模块

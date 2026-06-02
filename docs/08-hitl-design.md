@@ -440,11 +440,11 @@ export async function* runLoopFromCheckpoint(params, config): AsyncGenerator<Age
 ```ts
 class PermissionMiddleware extends Middleware {
   name = 'permission'
-  state = { approvedTools: [] as string[] }
+  store = { approvedTools: [] as string[] }
 
   async wrapToolCall(next: ToolCallFn, ctx: ToolCallContext) {
     // 已批准的工具直接放行
-    if (this.state.approvedTools.includes(ctx.toolName)) {
+    if (this.store.approvedTools.includes(ctx.toolName)) {
       return next(ctx)
     }
 
@@ -602,6 +602,5 @@ tool_calls: [A(并行), B(并行,需审批), C(串行)]
 
 ### SessionCheckpoint 的序列化要求
 
-- `state.messages`、`state.usage`、`state.middlewareStates` 都是 JSON 安全的
-- `state.metadata` 是 `Map<string, unknown>`——序列化时需要转为 plain object
+- `state.messages`、`state.usage`、`state.store` 都是 JSON 安全的
 - 提供 `serializeAgentState()` / `deserializeAgentState()` 辅助函数

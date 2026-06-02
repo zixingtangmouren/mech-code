@@ -245,8 +245,8 @@ clearTools() // 清空注册表（测试时使用）
 ```ts
 interface AgentMiddleware {
   name: string
-  /** 公有状态：自动同步到 AgentState.middlewareStates，其他中间件可读，支持持久化 */
-  state?: Record<string, unknown>
+  /** 默认共享状态：合并到 AgentState.store，其他中间件和工具可读写，支持持久化 */
+  store?: Record<string, unknown>
 
   // === Hook 模式：状态观察与修改 ===
   beforeAgent?(ctx: RunContext): Awaitable<void> // run 开始，做初始化
@@ -268,17 +268,17 @@ import { Middleware } from '@mech-code/core'
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
 
-  // 公有状态：自动同步到 AgentState，其他中间件可读
-  state = { totalInputTokens: 0, totalOutputTokens: 0 }
+  // 默认共享状态：运行时会绑定到 AgentState.store
+  store = { totalInputTokens: 0, totalOutputTokens: 0 }
 
   // 私有状态：仅自身可见
   private threshold = 100_000
 
   afterModel(ctx: RunContext) {
     const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    this.state.totalInputTokens += inputTokens
-    this.state.totalOutputTokens += outputTokens
-    if (this.state.totalInputTokens > this.threshold) {
+    this.store.totalInputTokens += inputTokens
+    this.store.totalOutputTokens += outputTokens
+    if (this.store.totalInputTokens > this.threshold) {
       console.warn('累计 input token 已超过阈值')
     }
   }
@@ -451,7 +451,7 @@ Agent 会话状态由调用方持有并传入每次 `run()`。Agent 在执行过
 
 ```ts
 const state = createAgentState()
-// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 }, metadata: new Map(), middlewareStates: {} }
+// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 }, store: {} }
 
 // 第一轮对话
 state.messages.push({ role: 'user', content: '列出 src/ 下的文件' })

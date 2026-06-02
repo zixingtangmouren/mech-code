@@ -40,13 +40,17 @@ function isEnoent(err: unknown): boolean {
   return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT'
 }
 
-/** 获取 readFileState 缓存（从 metadata 中取出） */
-function getReadFileState(
-  metadata: Record<string, unknown>,
-): Map<string, ReadCacheEntry> | undefined {
-  const state = metadata['__readFileState']
-  if (state instanceof Map) return state as Map<string, ReadCacheEntry>
-  return undefined
+type ReadFileState = Record<string, ReadCacheEntry>
+
+/** 获取 readFileState 缓存（从 store 中取出，惰性初始化） */
+function getReadFileState(store: Record<string, unknown>): ReadFileState {
+  const state = store['readFileState']
+  if (state && typeof state === 'object' && !Array.isArray(state)) {
+    return state as ReadFileState
+  }
+  const next: ReadFileState = {}
+  store['readFileState'] = next
+  return next
 }
 
 // === 工具定义 ===
@@ -102,7 +106,7 @@ export const writeFileTool = defineTool({
   async execute(input, ctx) {
     // 路径解析：展开 ~，然后相对 cwd 解析
     const resolvedPath = resolve(ctx.cwd, expandPath(input.path))
-    const readFileState = getReadFileState(ctx.metadata)
+    const readFileState = getReadFileState(ctx.store)
 
     // === 文件存在性检查 ===
     let fileExists = false
@@ -122,7 +126,7 @@ export const writeFileTool = defineTool({
 
     if (fileExists) {
       // === 读前置校验（仅覆写时） ===
-      if (readFileState && !readFileState.has(resolvedPath)) {
+      if (!readFileState[resolvedPath]) {
         return {
           content:
             '文件已存在但尚未被读取。请先使用 read_file 读取文件内容，或使用 edit_file 进行局部修改。',
@@ -131,14 +135,12 @@ export const writeFileTool = defineTool({
       }
 
       // === 时间戳校验 ===
-      if (readFileState) {
-        const cached = readFileState.get(resolvedPath)
-        if (cached && Math.floor(existingMtimeMs) > cached.timestamp) {
-          return {
-            content:
-              '文件自上次读取后已被外部修改（可能是用户编辑或 linter/formatter）。请重新读取后再写入。',
-            isError: true,
-          }
+      const cached = readFileState[resolvedPath]
+      if (cached && Math.floor(existingMtimeMs) > cached.timestamp) {
+        return {
+          content:
+            '文件自上次读取后已被外部修改（可能是用户编辑或 linter/formatter）。请重新读取后再写入。',
+          isError: true,
         }
       }
 
@@ -167,18 +169,16 @@ export const writeFileTool = defineTool({
     }
 
     // === 更新 readFileState ===
-    if (readFileState) {
-      try {
-        const newMtime = (await stat(resolvedPath)).mtimeMs
-        readFileState.set(resolvedPath, {
-          timestamp: Math.floor(newMtime),
-          offset: undefined,
-          limit: undefined,
-          content: input.content,
-        })
-      } catch {
-        // stat 失败不影响写入结果
+    try {
+      const newMtime = (await stat(resolvedPath)).mtimeMs
+      readFileState[resolvedPath] = {
+        timestamp: Math.floor(newMtime),
+        offset: undefined,
+        limit: undefined,
+        content: input.content,
       }
+    } catch {
+      // stat 失败不影响写入结果
     }
 
     // === 返回结果 ===

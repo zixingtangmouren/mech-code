@@ -82,13 +82,17 @@ async function findSimilarFile(filePath: string): Promise<string | undefined> {
   return best ? resolve(dir, best.name) : undefined
 }
 
-/** 获取 readFileState 缓存（从 metadata 中取出） */
-function getReadFileState(
-  metadata: Record<string, unknown>,
-): Map<string, ReadCacheEntry> | undefined {
-  const state = metadata['__readFileState']
-  if (state instanceof Map) return state as Map<string, ReadCacheEntry>
-  return undefined
+type ReadFileState = Record<string, ReadCacheEntry>
+
+/** 获取 readFileState 缓存（从 store 中取出，惰性初始化） */
+function getReadFileState(store: Record<string, unknown>): ReadFileState {
+  const state = store['readFileState']
+  if (state && typeof state === 'object' && !Array.isArray(state)) {
+    return state as ReadFileState
+  }
+  const next: ReadFileState = {}
+  store['readFileState'] = next
+  return next
 }
 
 /**
@@ -290,7 +294,7 @@ export const editFileTool = defineTool({
   async execute(input, ctx) {
     // 路径解析：展开 ~，然后相对 cwd 解析
     const resolvedPath = resolve(ctx.cwd, expandPath(input.path))
-    const readFileState = getReadFileState(ctx.metadata)
+    const readFileState = getReadFileState(ctx.store)
 
     // === old_string 为空：创建新文件 / 向空文件写入 ===
     if (input.old_string === '') {
@@ -320,7 +324,7 @@ export const editFileTool = defineTool({
     }
 
     // === 读前置校验 ===
-    if (readFileState && !readFileState.has(resolvedPath)) {
+    if (!readFileState[resolvedPath]) {
       return {
         content: '文件尚未被读取。请先使用 read_file 读取文件内容，再进行编辑。',
         isError: true,
@@ -328,32 +332,30 @@ export const editFileTool = defineTool({
     }
 
     // === 时间戳校验 ===
-    if (readFileState) {
-      const cached = readFileState.get(resolvedPath)
-      if (cached && Math.floor(mtimeMs) > cached.timestamp) {
-        // 兜底：若缓存了内容，对比内容是否真的变了
-        if (cached.content !== undefined) {
-          let currentContent: string
-          try {
-            currentContent = await readFile(resolvedPath, 'utf-8')
-          } catch {
-            return {
-              content: '文件自上次读取后已被外部修改。请重新读取后再编辑。',
-              isError: true,
-            }
-          }
-          if (currentContent !== cached.content) {
-            return {
-              content: '文件自上次读取后已被外部修改。请重新读取后再编辑。',
-              isError: true,
-            }
-          }
-          // 内容未变，mtime 变化是误报（如编辑器 auto-save），继续执行
-        } else {
+    const cached = readFileState[resolvedPath]
+    if (cached && Math.floor(mtimeMs) > cached.timestamp) {
+      // 兜底：若缓存了内容，对比内容是否真的变了
+      if (cached.content !== undefined) {
+        let currentContent: string
+        try {
+          currentContent = await readFile(resolvedPath, 'utf-8')
+        } catch {
           return {
             content: '文件自上次读取后已被外部修改。请重新读取后再编辑。',
             isError: true,
           }
+        }
+        if (currentContent !== cached.content) {
+          return {
+            content: '文件自上次读取后已被外部修改。请重新读取后再编辑。',
+            isError: true,
+          }
+        }
+        // 内容未变，mtime 变化是误报（如编辑器 auto-save），继续执行
+      } else {
+        return {
+          content: '文件自上次读取后已被外部修改。请重新读取后再编辑。',
+          isError: true,
         }
       }
     }
@@ -417,18 +419,16 @@ export const editFileTool = defineTool({
     }
 
     // === 更新 readFileState ===
-    if (readFileState) {
-      try {
-        const newMtime = (await stat(resolvedPath)).mtimeMs
-        readFileState.set(resolvedPath, {
-          timestamp: Math.floor(newMtime),
-          offset: undefined,
-          limit: undefined,
-          content: newContent,
-        })
-      } catch {
-        // stat 失败不影响编辑结果
+    try {
+      const newMtime = (await stat(resolvedPath)).mtimeMs
+      readFileState[resolvedPath] = {
+        timestamp: Math.floor(newMtime),
+        offset: undefined,
+        limit: undefined,
+        content: newContent,
       }
+    } catch {
+      // stat 失败不影响编辑结果
     }
 
     // === 返回结果 ===
@@ -447,7 +447,7 @@ async function handleCreateOrAppend(
   resolvedPath: string,
   inputPath: string,
   newString: string,
-  readFileState: Map<string, ReadCacheEntry> | undefined,
+  readFileState: ReadFileState,
 ) {
   // 检查文件是否存在
   let fileExists = false
@@ -489,18 +489,16 @@ async function handleCreateOrAppend(
   }
 
   // 更新 readFileState
-  if (readFileState) {
-    try {
-      const newMtime = (await stat(resolvedPath)).mtimeMs
-      readFileState.set(resolvedPath, {
-        timestamp: Math.floor(newMtime),
-        offset: undefined,
-        limit: undefined,
-        content: newString,
-      })
-    } catch {
-      // stat 失败不影响结果
+  try {
+    const newMtime = (await stat(resolvedPath)).mtimeMs
+    readFileState[resolvedPath] = {
+      timestamp: Math.floor(newMtime),
+      offset: undefined,
+      limit: undefined,
+      content: newString,
     }
+  } catch {
+    // stat 失败不影响结果
   }
 
   return { content: fileExists ? `已编辑 ${inputPath}` : `已创建 ${inputPath}` }

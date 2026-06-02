@@ -110,13 +110,17 @@ async function findSimilarFile(filePath: string): Promise<string | undefined> {
   return best ? resolve(dir, best.name) : undefined
 }
 
-/** 获取 readFileState 缓存（从 metadata 中取出） */
-function getReadFileState(
-  metadata: Record<string, unknown>,
-): Map<string, ReadCacheEntry> | undefined {
-  const state = metadata['__readFileState']
-  if (state instanceof Map) return state as Map<string, ReadCacheEntry>
-  return undefined
+type ReadFileState = Record<string, ReadCacheEntry>
+
+/** 获取 readFileState 缓存（从 store 中取出，惰性初始化） */
+function getReadFileState(store: Record<string, unknown>): ReadFileState {
+  const state = store['readFileState']
+  if (state && typeof state === 'object' && !Array.isArray(state)) {
+    return state as ReadFileState
+  }
+  const next: ReadFileState = {}
+  store['readFileState'] = next
+  return next
 }
 
 /**
@@ -252,18 +256,16 @@ export const readFileTool = defineTool({
     // 重复读取去重检查
     const offset = input.offset ?? 1
     const limit = input.limit
-    const readFileState = getReadFileState(ctx.metadata)
-    if (readFileState) {
-      const cached = readFileState.get(resolvedPath)
-      if (
-        cached &&
-        cached.offset === offset &&
-        cached.limit === limit &&
-        cached.timestamp === Math.floor(mtimeMs)
-      ) {
-        return {
-          content: '文件自上次读取后未发生变化，请参考之前的读取结果。',
-        }
+    const readFileState = getReadFileState(ctx.store)
+    const cached = readFileState[resolvedPath]
+    if (
+      cached &&
+      cached.offset === offset &&
+      cached.limit === limit &&
+      cached.timestamp === Math.floor(mtimeMs)
+    ) {
+      return {
+        content: '文件自上次读取后未发生变化，请参考之前的读取结果。',
       }
     }
 
@@ -298,14 +300,12 @@ export const readFileTool = defineTool({
     }
 
     // 更新去重缓存（全文读取时额外存储 content，供 edit_file 做一致性校验）
-    if (readFileState) {
-      const isFullRead = offset === 1 && limit === undefined
-      readFileState.set(resolvedPath, {
-        timestamp: Math.floor(mtimeMs),
-        offset,
-        limit,
-        content: isFullRead ? rawContent : undefined,
-      })
+    const isFullRead = offset === 1 && limit === undefined
+    readFileState[resolvedPath] = {
+      timestamp: Math.floor(mtimeMs),
+      offset,
+      limit,
+      content: isFullRead ? rawContent : undefined,
     }
 
     // 格式化输出：header + 带行号内容

@@ -96,8 +96,8 @@ interface AgentState {
   usage: Usage
 
   // === 扩展字段 ===
-  /** 中间件/工具自由读写的键值对 */
-  metadata: Map<string, unknown>
+  /** 中间件/工具自由读写的共享状态 */
+  store: Record<string, unknown>
 }
 ```
 
@@ -108,7 +108,7 @@ interface AgentState {
 const state: AgentState = {
   messages: [],
   usage: { inputTokens: 0, outputTokens: 0 },
-  metadata: new Map(),
+  store: {},
 }
 
 // 第一轮对话
@@ -660,7 +660,7 @@ interface AgentState {
   messages: Message[]
   summary?: string
   usage: Usage
-  metadata: Map<string, unknown>
+  store: Record<string, unknown>
 }
 
 // === 运行参数 ===
