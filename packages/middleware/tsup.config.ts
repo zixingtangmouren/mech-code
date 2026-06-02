@@ -7,5 +7,6 @@ export default defineConfig({
   clean: true,
   dts: true,
   sourcemap: true,
+  external: ['@mech-code/core', '@mech-code/shared'],
   tsconfig: './tsconfig.build.json',
 })

@@ -12,6 +12,7 @@ export function registerChatCommand(program: Command): void {
       const { App } = await import('../ui/App.js')
       const { loadConfig, createProviderFromConfig } = await import('../config/loader.js')
       const { createAgent } = await import('@mech-code/core')
+      const { todoMiddleware } = await import('@mech-code/middleware')
       const { getBuiltinTools } = await import('@mech-code/tools')
       const { buildSystemPrompt } = await import('../prompts/system.js')
 
@@ -42,6 +43,7 @@ export function registerChatCommand(program: Command): void {
       const agent = createAgent({
         provider,
         tools,
+        middleware: [todoMiddleware()],
         system,
         cwd,
         maxTurns: 20,

@@ -5,10 +5,11 @@
     "rootDir": "src",
     "paths": {
       "@mech-code/shared": ["../shared/src/index.ts"],
-      "@mech-code/core": ["../core/src/index.ts"]
+      "@mech-code/core": ["../core/src/index.ts"],
+      "@mech-code/middleware": ["../middleware/src/index.ts"]
     }
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"],
-  "references": [{ "path": "../shared" }, { "path": "../core" }]
+  "references": [{ "path": "../shared" }, { "path": "../core" }, { "path": "../middleware" }]
 }

@@ -68,6 +68,7 @@ export function aggregateEvents(events: AgentEvent[]): AggregatedBlock {
         break
       }
       case 'tool_start': {
+        if (event.toolName === 'write_todos') break
         const state: ToolCallState = {
           id: event.toolCallId,
           name: event.toolName,
@@ -85,6 +86,7 @@ export function aggregateEvents(events: AgentEvent[]): AggregatedBlock {
         break
       }
       case 'tool_executing': {
+        if (event.toolName === 'write_todos') break
         const t = toolMap.get(event.toolCallId)
         if (t && event.input) {
           // 用完整 input 覆盖流式拼接的 delta
@@ -93,6 +95,7 @@ export function aggregateEvents(events: AgentEvent[]): AggregatedBlock {
         break
       }
       case 'tool_result': {
+        if (event.toolName === 'write_todos') break
         const t = toolMap.get(event.toolCallId)
         if (t) {
           t.result = typeof event.output === 'string' ? event.output : JSON.stringify(event.output)

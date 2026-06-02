@@ -2,6 +2,7 @@ import { Box, Text, useApp } from 'ink'
 import React, { useState, useCallback, useRef } from 'react'
 import type { Agent, AgentState } from '@mech-code/core'
 import { createAgentState } from '@mech-code/core'
+import { getTodoState } from '@mech-code/middleware'
 import type { AgentEvent, Usage } from '@mech-code/shared'
 import { InputBox } from './InputBox.js'
 import { MessageList } from './MessageList.js'
@@ -9,6 +10,7 @@ import type { HistoryEntry } from './MessageList.js'
 import { Header } from './Header.js'
 import { StatusBar } from './StatusBar.js'
 import { Spinner } from './Spinner.js'
+import { TodoPanel } from './TodoPanel.js'
 import { parseSlashCommand, executeSlashCommand } from '../commands.js'
 import { colors } from '../theme.js'
 
@@ -36,9 +38,11 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
   const [totalUsage, setTotalUsage] = useState<Usage | null>(null)
   const [spinnerLabel, setSpinnerLabel] = useState('思考中...')
   const [processingStartTime, setProcessingStartTime] = useState<number>(0)
+  const [todoRevision, setTodoRevision] = useState(0)
 
   const stateRef = useRef<AgentState>(createAgentState())
   const abortRef = useRef<AbortController | null>(null)
+  const visibleTodos = getVisibleTodos(stateRef.current)
 
   // 中断当前生成
   const handleInterrupt = useCallback(() => {
@@ -56,6 +60,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             setHistory([])
             stateRef.current = createAgentState()
             setTotalUsage(null)
+            setTodoRevision((prev) => prev + 1)
           },
           exit,
         })
@@ -87,9 +92,9 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
           setCurrentEvents([...events])
 
           // 更新 spinner 标签
-          if (event.type === 'tool_start') {
+          if (event.type === 'tool_start' && event.toolName !== 'write_todos') {
             setSpinnerLabel(`执行 ${event.toolName}...`)
-          } else if (event.type === 'tool_end') {
+          } else if (event.type === 'tool_end' && event.toolName !== 'write_todos') {
             setSpinnerLabel('思考中...')
           } else if (event.type === 'reasoning_start') {
             setSpinnerLabel('思考中...')
@@ -105,6 +110,10 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
                 cacheReadTokens: (prev.cacheReadTokens ?? 0) + (event.usage.cacheReadTokens ?? 0),
               }
             })
+          }
+
+          if (event.type === 'tool_result' && event.toolName === 'write_todos') {
+            setTodoRevision((prev) => prev + 1)
           }
         }
 
@@ -142,6 +151,8 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         currentEvents={status === 'processing' ? currentEvents : undefined}
       />
 
+      <TodoPanel key={todoRevision} todos={visibleTodos} />
+
       {/* 处理中指示 */}
       {status === 'processing' && currentEvents.length === 0 && (
         <Box marginTop={1}>
@@ -176,6 +187,10 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
       <StatusBar model={model} usage={totalUsage} />
     </Box>
   )
+}
+
+function getVisibleTodos(state: AgentState) {
+  return getTodoState(state.store).visibleItems
 }
 
 /** 检查最后一个工具调用是否仍在执行中 */
