@@ -37,7 +37,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
       apiKey: config.apiKey ?? '',
       model: config.model,
       baseUrl: config.baseUrl,
-      defaultParams: { maxTokens: 8192 },
+      protocol: config.protocol,
+      defaultParams: { maxTokens: 8192, ...config.defaultParams },
     })
   }
 
@@ -46,7 +47,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
       apiKey: config.apiKey ?? '',
       model: config.model,
       baseUrl: config.baseUrl,
-      defaultParams: {},
+      protocol: config.protocol,
+      defaultParams: config.defaultParams ?? {},
     })
   }
 
@@ -55,7 +57,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
     apiKey: config.apiKey ?? '',
     model: config.model,
     baseUrl: config.baseUrl ?? '',
-    defaultParams: {},
+    protocol: config.protocol,
+    defaultParams: config.defaultParams ?? {},
   })
 }
 

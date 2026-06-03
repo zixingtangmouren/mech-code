@@ -18,6 +18,8 @@ export interface ProviderConfig {
   apiKey: string
   model: string
   baseUrl?: string
+  /** OpenAI 协议选择；未配置时保持旧版 Chat Completions 行为 */
+  protocol?: 'chat' | 'responses'
   headers?: Record<string, string>
   /** 所有调用的默认生成参数，可被 CallOptions.modelParams 覆盖 */
   defaultParams?: ModelParams

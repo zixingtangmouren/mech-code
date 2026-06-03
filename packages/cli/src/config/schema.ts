@@ -15,7 +15,9 @@ export interface ProviderConfigEntry {
   model: string
   apiKey?: string
   apiKeyEnv?: string
+  protocol?: ProviderConfig['protocol']
   headers?: Record<string, string>
+  defaultParams?: ProviderConfig['defaultParams']
 }
 
 /**
@@ -27,6 +29,8 @@ export function resolveProviderConfig(entry: ProviderConfigEntry): ProviderConfi
     baseUrl: entry.baseUrl,
     model: entry.model,
     apiKey,
+    protocol: entry.protocol,
     headers: entry.headers,
+    defaultParams: entry.defaultParams,
   }
 }
