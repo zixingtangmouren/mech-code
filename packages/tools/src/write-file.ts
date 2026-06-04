@@ -79,21 +79,6 @@ export const writeFileTool = defineTool({
   }),
   flags: { readonly: false, parallelSafe: false },
 
-  getPrompt(ctx) {
-    const hasEditTool = ctx.availableTools.includes('edit_file')
-    const editHint = hasEditTool
-      ? '\n- 修改现有文件时优先使用 edit_file 工具（仅发送 diff），write_file 仅用于创建新文件或完全重写'
-      : ''
-
-    return `将内容写入文件，如果文件已存在则覆写，不存在则创建（自动创建父目录）。
-
-使用说明：
-- path 参数支持绝对路径或相对于工作目录（${ctx.cwd}）的相对路径，也支持 ~ 表示主目录
-- 如果目标文件已存在，必须先使用 read_file 读取后才能覆写${editHint}
-- content 为完整的文件内容，会直接覆盖目标文件的全部内容
-- 不要创建文档文件（*.md）或 README，除非用户明确要求`
-  },
-
   validateInput(input) {
     // 危险设备路径拦截
     const rawPath = expandPath(input.path)

@@ -21,8 +21,7 @@ export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null 
           key={`${todo.status}-${todo.content}-${index}`}
           color={todo.status === 'in_progress' ? colors.warning : colors.muted}
         >
-          {todo.status === 'in_progress' ? '→' : '•'}{' '}
-          {todo.status === 'in_progress' && todo.activeForm ? todo.activeForm : todo.content}
+          {todo.status === 'in_progress' ? '→' : '•'} {todo.content}
         </Text>
       ))}
     </Box>

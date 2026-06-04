@@ -35,7 +35,6 @@ describe('createAgent', () => {
       description: 'Test tool',
       inputSchema: {},
       flags: { readonly: true, parallelSafe: true },
-      getPrompt: () => null,
       validateInput: () => ({ valid: true }),
       execute: vi.fn(),
       toDefinition: () => ({ name: 'test_tool', description: 'Test tool', inputSchema: {} }),

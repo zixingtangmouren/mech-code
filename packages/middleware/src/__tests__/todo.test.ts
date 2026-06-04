@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAgent, createAgentState } from '@mech-code/core'
+import { createAgent, createAgentState, createMiddleware } from '@mech-code/core'
 import type {
+  AgentMessage,
   CallOptions,
   ChatParams,
   ChatResponse,
   LLMProvider,
   StreamResult,
 } from '@mech-code/core'
-import { getTodoState, todoMiddleware } from '../todo.js'
+import { TODO_STORE_KEY, todoMiddleware } from '../todo.js'
+import type { TodoState } from '../todo.js'
 
 interface MockProvider extends LLMProvider {
   streamMock: ReturnType<typeof vi.fn<(params: ChatParams, options?: CallOptions) => StreamResult>>
@@ -51,12 +53,12 @@ describe('todoMiddleware', () => {
       // consume stream
     }
 
-    expect(getTodoState(state.store)).toMatchObject({ items: [], visibleItems: [] })
+    expect(readTodoState(state.store)).toMatchObject({ items: [] })
     expect(provider.streamMock).toHaveBeenCalled()
     expect(provider.streamCalls[0]?.tools?.some((tool) => tool.name === 'write_todos')).toBe(true)
   })
 
-  it('updates items and visibleItems from write_todos', async () => {
+  it('updates items from write_todos', async () => {
     const provider = createProvider([
       {
         content: [
@@ -70,7 +72,6 @@ describe('todoMiddleware', () => {
                 {
                   content: 'Implement middleware',
                   status: 'in_progress',
-                  activeForm: 'Implementing middleware',
                 },
               ],
             },
@@ -92,13 +93,13 @@ describe('todoMiddleware', () => {
       // consume stream
     }
 
-    const todos = getTodoState(state.store)
+    const todos = readTodoState(state.store)
     expect(todos.items).toHaveLength(2)
-    expect(todos.visibleItems).toHaveLength(2)
+    expect(todos.items[1]).toEqual({ content: 'Implement middleware', status: 'in_progress' })
     expect(todos.lastWriteTurn).toBe(0)
   })
 
-  it('clears visibleItems when all todos are completed', async () => {
+  it('clears todo state when all todos are completed', async () => {
     const provider = createProvider([
       {
         content: [
@@ -119,15 +120,24 @@ describe('todoMiddleware', () => {
       },
     ])
     const state = createAgentState()
+    state.store.todos = {
+      items: [{ content: 'Previous', status: 'in_progress' }],
+      lastWriteTurn: 0,
+      lastReminderTurn: 0,
+      turnCounter: 1,
+      writeCallCountByTurn: { 0: 1 },
+    }
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
 
     for await (const _event of agent.run({ state })) {
       // consume stream
     }
 
-    const todos = getTodoState(state.store)
-    expect(todos.items).toEqual([{ content: 'Verify', status: 'completed' }])
-    expect(todos.visibleItems).toEqual([])
+    const todos = readTodoState(state.store)
+    expect(todos.items).toEqual([])
+    expect(todos.lastWriteTurn).toBeUndefined()
+    expect(todos.lastReminderTurn).toBeUndefined()
+    expect(todos.writeCallCountByTurn).toEqual({})
   })
 
   it('rejects multiple write_todos calls in one assistant turn', async () => {
@@ -165,13 +175,16 @@ describe('todoMiddleware', () => {
 
     const toolMessages = state.messages.filter((message) => message.role === 'tool')
     expect(toolMessages).toHaveLength(2)
-    expect(toolMessages.every((message) => message.content.includes('called multiple times'))).toBe(
-      true,
-    )
-    expect(getTodoState(state.store).items).toEqual([])
+    expect(
+      toolMessages.every((message) =>
+        getMessageText(message.content).includes('called multiple times'),
+      ),
+    ).toBe(true)
+    expect(readTodoState(state.store).items).toEqual([])
   })
 
-  it('injects reminders after the configured threshold', async () => {
+  it('injects reminder as an agent user message before the latest user message when both thresholds are met', async () => {
+    const observedCallMessages: AgentMessage[][] = []
     const provider = createProvider([
       {
         content: [{ type: 'text', text: 'ok' }],
@@ -180,19 +193,101 @@ describe('todoMiddleware', () => {
       },
     ])
     const state = createAgentState()
+    state.messages.push({ role: 'user', content: 'continue' })
     state.store.todos = {
       items: [{ content: 'Finish work', status: 'pending' }],
-      visibleItems: [{ content: 'Finish work', status: 'pending' }],
       lastWriteTurn: 0,
-      turnCounter: 1,
+      lastReminderTurn: 0,
+      turnCounter: 3,
     }
-    const agent = createAgent({ provider, middleware: [todoMiddleware({ reminderTurns: 1 })] })
+    const agent = createAgent({
+      provider,
+      middleware: [
+        todoMiddleware({ turnsBetweenReminders: 2, turnsSinceWrite: 3 }),
+        createMiddleware({
+          name: 'observe-call-messages',
+          beforeModel(ctx) {
+            observedCallMessages.push(structuredClone(ctx.callMessages))
+          },
+        }),
+      ],
+    })
 
     for await (const _event of agent.run({ state })) {
       // consume stream
     }
 
     expect(provider.streamMock).toHaveBeenCalled()
-    expect(provider.streamCalls[0]?.system).toContain('Todo reminder:')
+    expect(provider.streamCalls[0]?.system).not.toContain('Todo reminder:')
+    expect(observedCallMessages[0]).toHaveLength(2)
+    const injectedMessage = observedCallMessages[0]?.[0]
+    expect(injectedMessage?.role).toBe('user')
+    expect(getMessageText(injectedMessage?.content)).toContain('Todo reminder:')
+    expect(injectedMessage?._meta).toEqual({
+      source: 'agent',
+      injected: true,
+      kind: 'todo_reminder',
+    })
+    expect(observedCallMessages[0]?.[1]).toMatchObject({ role: 'user', content: 'continue' })
+    expect(provider.streamCalls[0]?.messages).toHaveLength(2)
+    const providerReminderMessage = provider.streamCalls[0]?.messages[0]
+    expect(providerReminderMessage?.role).toBe('user')
+    expect(getMessageText(providerReminderMessage?.content)).toContain('Todo reminder:')
+    expect(providerReminderMessage).not.toHaveProperty('_meta')
+    expect(provider.streamCalls[0]?.messages[1]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'continue' }],
+    })
+    expect(state.messages).toHaveLength(1)
+    expect(readTodoState(state.store).lastReminderTurn).toBe(3)
+  })
+
+  it('does not inject reminder until both reminder thresholds are met', async () => {
+    const provider = createProvider([
+      {
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: 'end_turn',
+      },
+    ])
+    const state = createAgentState()
+    state.messages.push({ role: 'user', content: 'continue' })
+    state.store.todos = {
+      items: [{ content: 'Finish work', status: 'pending' }],
+      lastWriteTurn: 0,
+      lastReminderTurn: 2,
+      turnCounter: 3,
+    }
+    const agent = createAgent({
+      provider,
+      middleware: [todoMiddleware({ turnsBetweenReminders: 2, turnsSinceWrite: 3 })],
+    })
+
+    for await (const _event of agent.run({ state })) {
+      // consume stream
+    }
+
+    expect(provider.streamMock).toHaveBeenCalled()
+    expect(provider.streamCalls[0]?.system).not.toContain('Todo reminder:')
+    expect(provider.streamCalls[0]?.messages).toHaveLength(1)
+    expect(readTodoState(state.store).lastReminderTurn).toBe(2)
   })
 })
+
+function readTodoState(store: Record<string, unknown>): TodoState {
+  return store[TODO_STORE_KEY] as TodoState
+}
+
+function getMessageText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        block && typeof block === 'object' && 'text' in block
+          ? String((block as { text: unknown }).text)
+          : '',
+      )
+      .join('')
+  }
+  return ''
+}

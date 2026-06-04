@@ -1,18 +1,11 @@
 import { z } from 'zod'
-import type {
-  Tool,
-  ToolFlags,
-  ToolPromptContext,
-  ToolRunContext,
-  ToolOutput,
-  ValidationResult,
-} from './types.js'
+import type { Tool, ToolFlags, ToolRunContext, ToolOutput, ValidationResult } from './types.js'
 
 // === 原始 JSON Schema 版本 ===
 
 /**
  * defineTool 的初始化参数（原始 JSON Schema 版本）。
- * getPrompt 和 validateInput 为可选项，未提供时使用默认实现。
+ * validateInput 为可选项，未提供时使用默认实现。
  */
 export type ToolInit = {
   name: string
@@ -20,7 +13,6 @@ export type ToolInit = {
   inputSchema: Record<string, unknown>
   flags: ToolFlags
   execute(input: Record<string, unknown>, context: ToolRunContext): Promise<ToolOutput> | ToolOutput
-  getPrompt?(context: ToolPromptContext): string | null
   validateInput?(input: Record<string, unknown>): ValidationResult | Promise<ValidationResult>
 }
 
@@ -39,7 +31,6 @@ export type ToolZodInit<TSchema extends z.ZodTypeAny> = {
   schema: TSchema
   flags: ToolFlags
   execute(input: z.infer<TSchema>, context: ToolRunContext): Promise<ToolOutput> | ToolOutput
-  getPrompt?(context: ToolPromptContext): string | null
   /** 额外的业务约束校验（在 Zod 校验通过之后执行） */
   validateInput?(input: z.infer<TSchema>): ValidationResult | Promise<ValidationResult>
 }
@@ -91,8 +82,6 @@ export function defineTool<TSchema extends z.ZodTypeAny>(
       inputSchema,
       flags,
 
-      getPrompt: (ctx) => init.getPrompt?.(ctx) ?? null,
-
       // 先用 Zod safeParse，再调用额外的业务校验（如有）
       async validateInput(raw) {
         const result = schema.safeParse(raw)
@@ -121,8 +110,6 @@ export function defineTool<TSchema extends z.ZodTypeAny>(
     description: init.description,
     inputSchema: init.inputSchema,
     flags: init.flags,
-
-    getPrompt: (ctx) => init.getPrompt?.(ctx) ?? null,
 
     validateInput: (input) => init.validateInput?.(input) ?? { valid: true },
 

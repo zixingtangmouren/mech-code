@@ -28,22 +28,6 @@ export interface ToolRunContext {
   store: Record<string, unknown>
 }
 
-// === 提示词生成上下文 ===
-
-/**
- * 传递给 tool.getPrompt() 的上下文，在每轮构建 system prompt 时注入。
- */
-export interface ToolPromptContext {
-  /** 当前工作目录 */
-  cwd: string
-  /** 当前 Agent 可用的所有工具名列表（用于描述工具间协作关系） */
-  availableTools: string[]
-  /** 当前 turn 序号 */
-  turnIndex: number
-  /** 共享持久状态 */
-  store: Record<string, unknown>
-}
-
 // === 工具输出 ===
 
 /**
@@ -98,15 +82,6 @@ export interface Tool {
   readonly description: string
   readonly inputSchema: Record<string, unknown>
   readonly flags: ToolFlags
-
-  /**
-   * 提示词函数 —— 生成注入 system prompt 的工具说明。
-   * 可根据运行时上下文（cwd、其他工具、turn 进度）动态调整描述。
-   * 返回 null 表示使用静态 description 字段。
-   *
-   * 调用时机：每轮构建 system prompt 阶段，而非工具执行阶段。
-   */
-  getPrompt(context: ToolPromptContext): string | null
 
   /**
    * 输入校验 —— JSON Schema 结构校验之后的业务级约束校验。

@@ -12,7 +12,7 @@
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { defineTool } from '@mech-code/core'
-import type { ToolPromptContext, ToolRunContext } from '@mech-code/core'
+import type { ToolRunContext } from '@mech-code/core'
 import { classifyCommand } from './classifier.js'
 import { execShell, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS } from './executor.js'
 import {
@@ -34,17 +34,6 @@ function resolveShellCwd(inputCwd: string | undefined, context: ToolRunContext):
   const cached = context.store['shellCwd']
   if (typeof cached === 'string' && cached) return cached
   return context.cwd
-}
-
-/**
- * 获取当前操作系统的默认 shell 名称（用于 prompt 展示）。
- */
-function getDefaultShellName(): string {
-  if (process.env['SHELL']) {
-    const parts = process.env['SHELL'].split('/')
-    return parts.at(-1) ?? 'bash'
-  }
-  return process.platform === 'win32' ? 'cmd' : 'bash'
 }
 
 // === 工具定义 ===
@@ -73,53 +62,6 @@ export const bashTool = defineTool({
     readonly: false,
     // 不同命令在独立子进程中执行，天然隔离，可并行
     parallelSafe: true,
-  },
-
-  getPrompt(context: ToolPromptContext): string {
-    const { availableTools, cwd } = context
-    const shellName = getDefaultShellName()
-
-    const lines: string[] = [
-      '执行 shell 命令并返回输出。',
-      '',
-      `当前工作目录: ${cwd}`,
-      `Shell: ${shellName}，操作系统: ${process.platform}`,
-    ]
-
-    // 根据可用工具引导 LLM 优先使用专用工具
-    const toolPreferences: string[] = []
-    if (availableTools.includes('read_file')) {
-      toolPreferences.push('读取文件: 使用 read_file（优于 cat/head/tail）')
-    }
-    if (availableTools.includes('write_file')) {
-      toolPreferences.push('写入文件: 使用 write_file（优于 echo > 或 cat <<EOF）')
-    }
-    if (availableTools.includes('edit_file')) {
-      toolPreferences.push('编辑文件: 使用 edit_file（优于 sed -i 或 awk）')
-    }
-    if (availableTools.includes('list_dir')) {
-      toolPreferences.push('列出目录: 使用 list_dir（优于 ls）')
-    }
-
-    if (toolPreferences.length > 0) {
-      lines.push('', '## 工具优先级')
-      lines.push('以下操作应优先使用专用工具而非 bash:')
-      for (const pref of toolPreferences) {
-        lines.push(`- ${pref}`)
-      }
-    }
-
-    lines.push(
-      '',
-      '## 使用指南',
-      `- 超时默认 ${DEFAULT_TIMEOUT_MS / 1000} 秒；安装依赖等长时间命令请设置更大的 timeout`,
-      '- 多个独立命令可在同一轮发起多次并行 bash 调用',
-      '- 有依赖关系的命令用 && 串联在一次调用中',
-      '- 避免执行需要交互输入的命令（如 vim、交互式 python 等）',
-      '- 避免产生海量输出的命令，必要时加 | head -n 或 | tail -n 限制',
-    )
-
-    return lines.join('\n')
   },
 
   validateInput(input) {

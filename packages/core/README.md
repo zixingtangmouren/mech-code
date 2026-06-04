@@ -185,10 +185,6 @@ const searchTool = defineTool({
     if (query.length > 200) return { valid: false, error: 'Query is too long' }
     return { valid: true }
   },
-  // Optional: dynamic text injected into the system prompt each turn
-  getPrompt({ cwd }) {
-    return `Current working directory: ${cwd}`
-  },
 })
 ```
 

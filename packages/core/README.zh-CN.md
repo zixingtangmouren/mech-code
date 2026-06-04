@@ -185,10 +185,6 @@ const searchTool = defineTool({
     if (query.length > 200) return { valid: false, error: '搜索词过长' }
     return { valid: true }
   },
-  // 可选：动态生成注入 system prompt 的工具描述
-  getPrompt({ cwd }) {
-    return `当前工作目录: ${cwd}`
-  },
 })
 ```
 

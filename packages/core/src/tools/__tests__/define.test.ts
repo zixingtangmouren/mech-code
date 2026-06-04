@@ -28,19 +28,6 @@ describe('defineTool', () => {
     expect(tool.flags.parallelSafe).toBe(true)
   })
 
-  it('getPrompt 默认返回 null', () => {
-    const tool = defineTool({
-      name: 'echo',
-      description: '',
-      inputSchema: {},
-      flags: { readonly: true, parallelSafe: true },
-      async execute() {
-        return { content: '' }
-      },
-    })
-    expect(tool.getPrompt({ cwd: '/', availableTools: [], turnIndex: 0, store: {} })).toBeNull()
-  })
-
   it('validateInput 默认返回 valid: true', async () => {
     const tool = defineTool({
       name: 'echo',
@@ -76,24 +63,6 @@ describe('defineTool', () => {
       error: '路径不允许包含 ..',
     })
     expect(await tool.validateInput({ path: 'src/index.ts' })).toEqual({ valid: true })
-  })
-
-  it('自定义 getPrompt 生效', () => {
-    const tool = defineTool({
-      name: 'bash',
-      description: '执行命令',
-      inputSchema: {},
-      flags: { readonly: false, parallelSafe: true },
-      getPrompt(ctx) {
-        return `执行命令（当前目录: ${ctx.cwd}）`
-      },
-      async execute() {
-        return { content: '' }
-      },
-    })
-
-    const result = tool.getPrompt({ cwd: '/app', availableTools: [], turnIndex: 0, store: {} })
-    expect(result).toBe('执行命令（当前目录: /app）')
   })
 
   it('toDefinition 只返回三个字段', () => {

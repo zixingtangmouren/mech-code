@@ -7,6 +7,8 @@ import type { Message, SessionCheckpoint, Usage } from '@mech-code/shared'
 export type AgentMessage = Message & {
   /** 被摘要压缩过的消息，发送给 LLM 前应过滤（由中间件维护，Loop 不感知） */
   _compressed?: true
+  /** 框架内部元信息，用于标记 agent 层注入消息等，不发给 Provider */
+  _meta?: Record<string, unknown>
   /** 工具返回的图片数据（仅 role='tool' 时有值），供 Provider serializer 生成多模态 content block */
   _imageData?: { base64: string; mediaType: string }
 }

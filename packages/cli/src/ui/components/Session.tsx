@@ -2,7 +2,8 @@ import { Box, Text, useApp } from 'ink'
 import React, { useState, useCallback, useRef } from 'react'
 import type { Agent, AgentState } from '@mech-code/core'
 import { createAgentState } from '@mech-code/core'
-import { getTodoState } from '@mech-code/middleware'
+import { TODO_STORE_KEY } from '@mech-code/middleware'
+import type { TodoItem, TodoState } from '@mech-code/middleware'
 import type { AgentEvent, Usage } from '@mech-code/shared'
 import { InputBox } from './InputBox.js'
 import { MessageList } from './MessageList.js'
@@ -42,7 +43,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
 
   const stateRef = useRef<AgentState>(createAgentState())
   const abortRef = useRef<AbortController | null>(null)
-  const visibleTodos = getVisibleTodos(stateRef.current)
+  const panelTodos = getPanelTodos(stateRef.current)
 
   // 中断当前生成
   const handleInterrupt = useCallback(() => {
@@ -94,7 +95,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
           // 更新 spinner 标签
           if (event.type === 'tool_start' && event.toolName !== 'write_todos') {
             setSpinnerLabel(`执行 ${event.toolName}...`)
-          } else if (event.type === 'tool_end' && event.toolName !== 'write_todos') {
+          } else if (event.type === 'tool_end') {
             setSpinnerLabel('思考中...')
           } else if (event.type === 'reasoning_start') {
             setSpinnerLabel('思考中...')
@@ -151,7 +152,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         currentEvents={status === 'processing' ? currentEvents : undefined}
       />
 
-      <TodoPanel key={todoRevision} todos={visibleTodos} />
+      <TodoPanel key={todoRevision} todos={panelTodos} />
 
       {/* 处理中指示 */}
       {status === 'processing' && currentEvents.length === 0 && (
@@ -189,8 +190,9 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
   )
 }
 
-function getVisibleTodos(state: AgentState) {
-  return getTodoState(state.store).visibleItems
+function getPanelTodos(state: AgentState) {
+  const todoState = state.store[TODO_STORE_KEY] as TodoState | undefined
+  return (todoState?.items ?? []).filter((todo): todo is TodoItem => todo.status !== 'completed')
 }
 
 /** 检查最后一个工具调用是否仍在执行中 */

@@ -64,7 +64,6 @@ export { MiddlewarePipeline } from './middleware/pipeline.js'
 export type {
   Tool,
   ToolFlags,
-  ToolPromptContext,
   ToolRunContext,
   ToolOutput,
   ValidationResult,

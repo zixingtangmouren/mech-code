@@ -158,20 +158,6 @@ export const readFileTool = defineTool({
   }),
   flags: { readonly: true, parallelSafe: true },
 
-  getPrompt(ctx) {
-    return `读取本地文件系统中的文件内容。
-
-使用说明：
-- path 参数支持绝对路径或相对于工作目录（${ctx.cwd}）的相对路径，也支持 ~ 表示主目录
-- 默认读取整个文件（上限 ${DEFAULT_MAX_LINES} 行）
-- 文件过大时会返回错误提示，此时请使用 offset 和 limit 参数分段读取
-- 返回内容带有行号前缀，格式类似 cat -n
-- 支持读取图片文件（png/jpg/gif/webp），内容将以视觉方式呈现
-- 不支持读取二进制文件（可执行文件、压缩包等）
-- 若文件不存在会尝试建议相近的文件名
-- 若文件自上次读取后未变化，会返回提示避免重复消耗 token`
-  },
-
   validateInput(input) {
     const rawPath = expandPath(input.path)
     const ext = extname(rawPath).slice(1).toLowerCase()

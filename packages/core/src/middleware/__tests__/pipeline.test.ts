@@ -14,7 +14,6 @@ function createMockTool(name: string): Tool {
     description: `Mock tool: ${name}`,
     inputSchema: { type: 'object' },
     flags: { readonly: true, parallelSafe: true },
-    getPrompt: () => null,
     validateInput: () => ({ valid: true }),
     execute: () => ({ content: `executed ${name}` }),
     toDefinition: () => ({ name, description: `Mock tool: ${name}`, inputSchema: {} }),

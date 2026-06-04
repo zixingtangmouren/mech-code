@@ -302,19 +302,6 @@ describe('edit_file', () => {
     })
   })
 
-  describe('getPrompt', () => {
-    it('返回包含 cwd 的提示词', () => {
-      const prompt = editFileTool.getPrompt({
-        cwd: '/workspace',
-        availableTools: ['read_file', 'edit_file'],
-        turnIndex: 1,
-        store: {},
-      })
-      expect(prompt).toContain('/workspace')
-      expect(prompt).toContain('read_file')
-    })
-  })
-
   // === Phase 2 测试 ===
 
   describe('引号标准化匹配', () => {

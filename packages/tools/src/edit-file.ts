@@ -261,21 +261,6 @@ export const editFileTool = defineTool({
   }),
   flags: { readonly: false, parallelSafe: false },
 
-  getPrompt(ctx) {
-    return `通过精确字符串匹配编辑文件内容。
-
-使用说明：
-- 必须先使用 read_file 读取文件，再进行编辑
-- path 参数支持绝对路径或相对于工作目录（${ctx.cwd}）的相对路径，也支持 ~ 表示主目录
-- old_string 必须与文件中的内容完全一致（包括缩进、空格、换行）
-- 注意 read_file 返回的行号前缀不是文件内容的一部分，不要包含在 old_string 中
-- old_string 不唯一时会报错。请提供更多上下文行使其唯一，或使用 replace_all 替换所有出现
-- 使用最小的 old_string 足以唯一定位即可（通常 2-4 行上下文够了）
-- old_string 为空字符串时表示创建新文件（文件不得已存在）
-- replace_all 适用于变量重命名等需要全局替换的场景
-- 优先编辑现有文件，避免不必要地创建新文件`
-  },
-
   validateInput(input) {
     // old_string 和 new_string 相同则无意义
     if (input.old_string !== '' && input.old_string === input.new_string) {
