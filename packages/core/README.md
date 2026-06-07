@@ -234,25 +234,25 @@ Middleware extends Agent behavior in a pluggable way — handling retry, rate-li
 - **Hook mode** — read and write Context state (logging, context compression, token counting)
 - **Wrap mode** — wrap a core operation (retry, caching, circuit breaker, permission gate)
 
-Responsibility boundary: **hooks only read/write state; wraps only wrap behavior** — never mixed.
+Responsibility boundary: **hooks handle lifecycle state; wraps handle one concrete call**. Use `wrapModelCall` / `wrapToolCall` when you need to change the final input sent to the model API or tool implementation.
 
 ### Interface
 
 ```ts
 interface AgentMiddleware {
   name: string
-  /** Default shared state: merged into AgentState.store; readable and writable by middleware/tools */
-  store?: Record<string, unknown>
+  /** Default AgentState extensions, merged into AgentState top-level keys */
+  state?: Record<string, unknown>
 
   // === Hook mode: observe and modify state ===
   beforeAgent?(ctx: RunContext): Awaitable<void> // run start — initialize
   afterAgent?(ctx: RunContext): Awaitable<void> // run end — like finally
-  beforeModel?(ctx: RunContext): Awaitable<void> // modify callMessages / system / tools
+  beforeModel?(ctx: RunContext): Awaitable<void> // organize state.messages, maintain lifecycle state
   afterModel?(ctx: RunContext): Awaitable<void> // observe model output, update stats
 
-  // === Wrap mode: wrap the core operation ===
-  wrapModelCall?(next: ModelCallFn, ctx: RunContext): Awaitable<StreamResult>
-  wrapToolCall?(next: ToolCallFn, ctx: ToolCallContext): Awaitable<ToolOutput>
+  // === Wrap mode: intercept one concrete call ===
+  wrapModelCall?(request: ModelCallRequest, handler: ModelCallHandler): Awaitable<StreamResult>
+  wrapToolCall?(request: ToolCallRequest, handler: ToolCallHandler): Awaitable<ToolOutput>
 }
 ```
 
@@ -264,17 +264,17 @@ import { Middleware } from '@mech-code/core'
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
 
-  // Default shared state: bound to AgentState.store at runtime
-  store = { totalInputTokens: 0, totalOutputTokens: 0 }
+  // Default state extensions merged into AgentState at run start
+  state = { totalInputTokens: 0, totalOutputTokens: 0 }
 
   // Private state: only visible to this instance
   private threshold = 100_000
 
   afterModel(ctx: RunContext) {
-    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    this.store.totalInputTokens += inputTokens
-    this.store.totalOutputTokens += outputTokens
-    if (this.store.totalInputTokens > this.threshold) {
+    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
+    ctx.state.totalInputTokens = (ctx.state.totalInputTokens as number) + inputTokens
+    ctx.state.totalOutputTokens = (ctx.state.totalOutputTokens as number) + outputTokens
+    if ((ctx.state.totalInputTokens as number) > this.threshold) {
       console.warn('Total input tokens exceeded threshold')
     }
   }
@@ -286,16 +286,13 @@ class TokenCounterMiddleware extends Middleware {
 ```ts
 interface RunContext {
   state: AgentState // full conversation state (mutable reference)
-  callMessages: Message[] // snapshot sent to the model this turn (beforeModel can rewrite)
-  system: string // system prompt this turn (beforeModel can append)
-  tools: ToolDefinition[] // tools this turn (beforeModel can filter)
-  lastResponse?: ChatResponse // available in afterModel (read-only observation point)
-  readonly turnIndex: number
-  readonly signal: AbortSignal
+  readonly props: Readonly<Record<string, unknown>> // read-only run environment, e.g. cwd
+  runtime: AgentRuntime // provider, system, tools, signal, emit, notifyStateChanged
+  loopState: AgentLoopState // turnIndex, stopReason, lastResponse, pendingToolCalls
 }
 ```
 
-`state` is the persistent truth — mutations here survive across turns. `callMessages` is a per-turn projection — mutations only affect the current model call. `lastResponse` in `afterModel` is read-only: model output should not be modified after streaming.
+`state` is the persistent truth — mutations here survive across turns. Middleware that wants to change the current model input rewrites `ModelCallRequest.params`; middleware that wants to change the current tool input rewrites `ToolCallRequest.toolInput`.
 
 ### Example: logger middleware (Hook mode)
 
@@ -305,11 +302,11 @@ import type { AgentMiddleware } from '@mech-code/core'
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
   beforeModel(ctx) {
-    console.log(`[Turn ${ctx.turnIndex}] Sending ${ctx.callMessages.length} messages`)
+    console.log(`[Turn ${ctx.loopState.turnIndex}] Sending ${ctx.state.messages.length} messages`)
   },
   afterModel(ctx) {
-    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    console.log(`[Turn ${ctx.turnIndex}] Tokens: ${inputTokens} in / ${outputTokens} out`)
+    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
+    console.log(`[Turn ${ctx.loopState.turnIndex}] Tokens: ${inputTokens} in / ${outputTokens} out`)
   },
 }
 ```
@@ -319,10 +316,10 @@ const loggerMiddleware: AgentMiddleware = {
 ```ts
 const retryMiddleware: AgentMiddleware = {
   name: 'retry',
-  async wrapModelCall(next, ctx) {
+  async wrapModelCall(request, handler) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await next(ctx)
+        return await handler(request)
       } catch (e) {
         if (!(e instanceof ProviderError) || !e.retryable || attempt === 2) throw e
         await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
@@ -338,13 +335,13 @@ const retryMiddleware: AgentMiddleware = {
 ```ts
 const permissionMiddleware: AgentMiddleware = {
   name: 'permission',
-  async wrapToolCall(next, ctx) {
-    const tool = getTool(ctx.toolName)
+  async wrapToolCall(request, handler) {
+    const tool = request.tool ?? getTool(request.toolName)
     if (!tool?.flags.readonly) {
-      const ok = await askUser(`Allow "${ctx.toolName}"?`)
+      const ok = await askUser(`Allow "${request.toolName}"?`)
       if (!ok) return { content: 'User denied this action', isError: true }
     }
-    return next(ctx)
+    return handler(request)
   },
 }
 ```
@@ -422,7 +419,6 @@ const agent = createAgent({
   system: '...',       // System prompt
   middleware: [...],   // Middleware list
   maxTurns: 20,        // Max loop iterations per run (default: 20)
-  cwd: process.cwd(),  // Working directory passed to tools
 })
 ```
 
@@ -446,12 +442,16 @@ Agent state is held externally and passed into every `run()` call. The Agent mut
 
 ```ts
 const state = createAgentState()
-// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, store: {} }
+// or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 } }
 
 // First turn
 state.messages.push({ role: 'user', content: 'List the files in src/' })
-for await (const event of agent.run({ state, signal: abortController.signal })) {
-  // AgentEvent: agent_run_start | turn_start | text_delta | tool_executing | ... | agent_run_end
+for await (const event of agent.run({
+  state,
+  config: { signal: abortController.signal },
+  props: { cwd: process.cwd(), platform: process.platform },
+})) {
+  // AgentEvent: agent_run_start | state_changed | turn_start | text_delta | ... | agent_run_end
 }
 
 // Second turn — same state continues the conversation
@@ -487,7 +487,9 @@ const summaryAgent = mainAgent.fork({
 | `AgentState` / `AgentMessage`              | Session state types                                 |
 | `RunParams` / `RunResult`                  | Agent run input and output types                    |
 | `RunContext` / `ToolCallContext`           | Middleware context types                            |
-| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap-mode middleware function types                 |
+| `ModelCallRequest` / `ToolCallRequest`     | Per-call request objects for wrap-mode middleware   |
+| `ModelCallHandler` / `ToolCallHandler`     | Handler types that continue inward in wrap mode     |
+| `Awaitable`                                | Helper for sync or async return values              |
 | `Middleware`                               | Stateful middleware base class                      |
 | `MiddlewarePipeline`                       | Pipeline executor (advanced use)                    |
 | `AnthropicProvider`                        | Anthropic provider                                  |

@@ -1,10 +1,10 @@
 import { Box, Text, useApp } from 'ink'
 import React, { useState, useCallback, useRef } from 'react'
 import type { Agent, AgentState } from '@mech-code/core'
-import { createAgentState } from '@mech-code/core'
+import { UserMessage, createAgentState } from '@mech-code/core'
 import { TODO_STORE_KEY } from '@mech-code/middleware'
 import type { TodoItem, TodoState } from '@mech-code/middleware'
-import type { AgentEvent, Usage } from '@mech-code/shared'
+import type { AgentEvent, SerializableAgentState, Usage } from '@mech-code/shared'
 import { InputBox } from './InputBox.js'
 import { MessageList } from './MessageList.js'
 import type { HistoryEntry } from './MessageList.js'
@@ -39,11 +39,10 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
   const [totalUsage, setTotalUsage] = useState<Usage | null>(null)
   const [spinnerLabel, setSpinnerLabel] = useState('思考中...')
   const [processingStartTime, setProcessingStartTime] = useState<number>(0)
-  const [todoRevision, setTodoRevision] = useState(0)
+  const [panelTodos, setPanelTodos] = useState<TodoItem[]>([])
 
   const stateRef = useRef<AgentState>(createAgentState())
   const abortRef = useRef<AbortController | null>(null)
-  const panelTodos = getPanelTodos(stateRef.current)
 
   // 中断当前生成
   const handleInterrupt = useCallback(() => {
@@ -61,7 +60,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             setHistory([])
             stateRef.current = createAgentState()
             setTotalUsage(null)
-            setTodoRevision((prev) => prev + 1)
+            setPanelTodos([])
           },
           exit,
         })
@@ -72,7 +71,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
       }
 
       // 追加用户消息到 state
-      stateRef.current.messages.push({ role: 'user', content: text })
+      stateRef.current.messages.push(new UserMessage(text))
       setHistory((prev) => [...prev, { role: 'user', content: text }])
       setCurrentEvents([])
       setError(null)
@@ -87,7 +86,12 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         const events: AgentEvent[] = []
         for await (const event of agent.run({
           state: stateRef.current,
-          signal: abortController.signal,
+          config: { signal: abortController.signal },
+          props: {
+            cwd,
+            platform: process.platform,
+            arch: process.arch,
+          },
         })) {
           events.push(event)
           setCurrentEvents([...events])
@@ -113,8 +117,8 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             })
           }
 
-          if (event.type === 'tool_result' && event.toolName === 'write_todos') {
-            setTodoRevision((prev) => prev + 1)
+          if (event.type === 'state_changed' && event.changedKeys.includes(TODO_STORE_KEY)) {
+            setPanelTodos(getPanelTodos(event.state))
           }
         }
 
@@ -138,7 +142,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         abortRef.current = null
       }
     },
-    [agent, exit],
+    [agent, cwd, exit],
   )
 
   return (
@@ -152,7 +156,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         currentEvents={status === 'processing' ? currentEvents : undefined}
       />
 
-      <TodoPanel key={todoRevision} todos={panelTodos} />
+      <TodoPanel todos={panelTodos} />
 
       {/* 处理中指示 */}
       {status === 'processing' && currentEvents.length === 0 && (
@@ -190,8 +194,8 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
   )
 }
 
-function getPanelTodos(state: AgentState) {
-  const todoState = state.store[TODO_STORE_KEY] as TodoState | undefined
+function getPanelTodos(state: AgentState | SerializableAgentState): TodoItem[] {
+  const todoState = state[TODO_STORE_KEY] as TodoState | undefined
   return (todoState?.items ?? []).filter((todo): todo is TodoItem => todo.status !== 'completed')
 }
 

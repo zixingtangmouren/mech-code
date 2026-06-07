@@ -1,4 +1,5 @@
 import type { ToolDefinition } from '@mech-code/shared'
+import type { ToolCallContext } from '../middleware/types.js'
 
 // === 工具固有属性 ===
 
@@ -15,18 +16,8 @@ export interface ToolFlags {
 
 // === 工具执行上下文 ===
 
-/**
- * 传递给 tool.execute() 的运行时上下文。
- * 注意：与中间件的 ToolExecContext 不同，这里只包含工具执行所需的最小信息。
- */
-export interface ToolRunContext {
-  /** 当前工作目录 */
-  cwd: string
-  /** 中止信号，工具应在收到信号时尽早终止 */
-  signal: AbortSignal
-  /** 共享持久状态（session 状态、环境变量、用户配置等） */
-  store: Record<string, unknown>
-}
+/** 传递给 tool.execute() 的运行时上下文，与中间件工具调用上下文保持一致。 */
+export type ToolRunContext = ToolCallContext
 
 // === 工具输出 ===
 
@@ -55,7 +46,7 @@ export interface ValidationResult {
 
 /**
  * 文件读取缓存条目，用于 read_file / edit_file 工具的读写一致性保证。
- * 通过 ToolRunContext.store.readFileState 传递给工具。
+ * 通过 ToolRunContext.state.readFileState 传递给工具。
  */
 export interface ReadCacheEntry {
   /** 文件读取/写入时的 mtime（毫秒，Math.floor） */

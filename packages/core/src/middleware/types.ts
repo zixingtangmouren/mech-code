@@ -1,24 +1,41 @@
-import type { ToolDefinition } from '@mech-code/shared'
-import type { AgentMessage, AgentState } from '../agent/state.js'
-import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
+import type { AgentEvent, PendingToolCall, ToolDefinition } from '@mech-code/shared'
+import type { AgentState } from '../agent/state.js'
+import type {
+  LLMProvider,
+  ChatResponse,
+  StreamResult,
+  ChatParams,
+  CallOptions,
+} from '../provider/types.js'
 import type { Tool, ToolOutput } from '../tools/types.js'
 
 export type Awaitable<T> = T | Promise<T>
 
-/** 模型调用函数类型 —— Wrap 链的节点签名 */
-export type ModelCallFn = (ctx: RunContext) => Promise<StreamResult>
+/** 模型调用 handler —— Wrap 链继续向内执行的节点签名 */
+export type ModelCallHandler = (request: ModelCallRequest) => Promise<StreamResult>
 
-/** 工具调用函数类型 —— Wrap 链的节点签名 */
-export type ToolCallFn = (ctx: ToolCallContext) => Promise<ToolOutput>
+/** 工具调用 handler —— Wrap 链继续向内执行的节点签名 */
+export type ToolCallHandler = (request: ToolCallRequest) => Promise<ToolOutput>
 
-/** Props 字段描述符（文档化 + 开发模式校验） */
-export interface PropDescriptor {
-  /** 字段描述 */
-  description: string
-  /** 是否必填（缺失时开发模式下 console.warn） */
-  required?: boolean
-  /** 默认值（缺失时使用） */
-  defaultValue?: unknown
+export type AgentStopReason = 'end_turn' | 'max_turns' | 'error' | 'abort' | 'suspended'
+
+export interface AgentRuntime {
+  readonly runId: string
+  provider: LLMProvider
+  system: string
+  tools: ToolDefinition[]
+  readonly middleware: AgentMiddleware[]
+  readonly signal: AbortSignal
+  emit(event: AgentEvent): void
+  notifyStateChanged(reason: string, keys?: string[]): void
+}
+
+export interface AgentLoopState {
+  turnIndex: number
+  stopReason: AgentStopReason
+  lastResponse?: ChatResponse
+  pendingToolCalls: PendingToolCall[]
+  stateRevision: number
 }
 
 export interface AgentMiddleware {
@@ -33,16 +50,10 @@ export interface AgentMiddleware {
   tools?: Tool[]
 
   /**
-   * 默认共享状态（可选）。
-   * 声明在此的数据会合并到 AgentState.store 中，并与其他中间件/工具共享。
+   * 默认 AgentState 扩展字段（可选）。
+   * 声明在此的数据会合并到 AgentState 顶层，不覆盖调用方已有字段。
    */
-  store?: Record<string, unknown>
-
-  /**
-   * 声明中间件期望的 props（文档化 + 开发模式 warning）。
-   * 框架不做强制校验，但在开发模式下会对 required 字段缺失发出警告。
-   */
-  propsSchema?: Record<string, PropDescriptor>
+  state?: Record<string, unknown>
 
   // === Hook 式：状态观察与修改 ===
 
@@ -51,96 +62,111 @@ export interface AgentMiddleware {
   /** Agent run 结束后触发（类似 finally，即使出错也执行），用于清理和收尾 */
   afterAgent?(ctx: RunContext): Awaitable<void>
 
-  /** 模型调用前：可修改 callMessages / system / tools（上下文压缩、动态注入等） */
+  /** 模型调用前：可直接修改 state.messages 或维护生命周期状态 */
   beforeModel?(ctx: RunContext): Awaitable<void>
   /** 模型响应后、工具执行前：可观察模型输出、更新 state 中的统计或元信息 */
   afterModel?(ctx: RunContext): Awaitable<void>
 
   // === Wrap 式：包裹核心操作 ===
 
-  /** 包裹模型调用。调用 next(ctx) 执行实际请求，可在外部添加重试/缓存/限流逻辑 */
-  wrapModelCall?(next: ModelCallFn, ctx: RunContext): Awaitable<StreamResult>
+  /**
+   * 包裹模型调用。
+   * 调用 handler(request) 执行内层请求，可改写本次真实 provider 入参、重试、缓存或兜底。
+   */
+  wrapModelCall?(request: ModelCallRequest, handler: ModelCallHandler): Awaitable<StreamResult>
 
-  /** 包裹工具调用。调用 next(ctx) 执行实际工具，可在外部添加权限/超时/熔断逻辑 */
-  wrapToolCall?(next: ToolCallFn, ctx: ToolCallContext): Awaitable<ToolOutput>
+  /**
+   * 包裹工具调用。
+   * 调用 handler(request) 执行内层工具，可改写本次真实工具入参、拒绝、重试或截断结果。
+   */
+  wrapToolCall?(request: ToolCallRequest, handler: ToolCallHandler): Awaitable<ToolOutput>
 }
 
 /**
  * 有状态中间件的基类。
- * 继承此类可通过 store 字段声明默认共享状态，框架会自动绑定到 AgentState.store。
+ * 继承此类可通过 state 字段声明默认 AgentState 扩展字段。
  * 无状态的简单中间件可直接使用 AgentMiddleware 接口（对象字面量形式）。
  */
 export abstract class Middleware implements AgentMiddleware {
   abstract name: string
-  store: Record<string, unknown> = {}
+  state: Record<string, unknown> = {}
   tools?: Tool[]
-  propsSchema?: Record<string, PropDescriptor>
 }
 
 // === 工厂函数 ===
 
 /** createMiddleware 的初始化参数 */
-export type MiddlewareInit = Omit<AgentMiddleware, 'store'> & {
-  /** 默认共享状态（会被深克隆，确保多次调用返回独立实例） */
-  store?: Record<string, unknown>
+export type MiddlewareInit = Omit<AgentMiddleware, 'state'> & {
+  /** 默认 AgentState 扩展字段（会被深克隆，确保多次调用返回独立实例） */
+  state?: Record<string, unknown>
 }
 
 /**
  * createMiddleware —— 中间件工厂函数。
  *
- * 相比对象字面量：对 store 做深克隆保护，避免多实例共享默认状态。
+ * 相比对象字面量：对 state 做深克隆保护，避免多实例共享默认状态。
  * 相比继承 Middleware 基类：无需 class + constructor，适合简单场景。
  *
  * @example
  * const logger = createMiddleware({
  *   name: 'logger',
- *   beforeModel(ctx) { console.log('turn', ctx.turnIndex) },
+ *   beforeModel(ctx) { console.log('turn', ctx.loopState.turnIndex) },
  * })
  *
  * @example
  * // 带状态 + 工具的自包含中间件
  * const counter = createMiddleware({
  *   name: 'call-counter',
- *   store: { count: 0 },
+ *   state: { count: 0 },
  *   tools: [checkCountTool],
- *   wrapToolCall(next, ctx) {
- *     this.store!.count = (this.store!.count as number) + 1
- *     return next(ctx)
+ *   wrapToolCall(request, handler) {
+ *     request.context.state.count = (request.context.state.count as number) + 1
+ *     return handler(request)
  *   },
  * })
  */
 export function createMiddleware(init: MiddlewareInit): AgentMiddleware {
-  const { store: rawStore, ...rest } = init
+  const { state: rawState, ...rest } = init
   return {
     ...rest,
-    store: rawStore ? structuredClone(rawStore) : undefined,
+    state: rawState ? structuredClone(rawState) : undefined,
   }
 }
 
-/** 中间件在每轮中可访问的 Context —— 含完整状态和本次模型调用的投影 */
+/** 中间件在每轮中可访问的 Context */
 export interface RunContext {
-  // === 完整会话状态（可变引用，中间件对 state 的修改会持久化）===
+  /** 完整会话状态（可变引用，中间件对 state 的修改会持久化） */
   state: AgentState
-
-  // === 模型调用投影（每轮开始时从 state.messages 生成快照，中间件可改写）===
-  /** 即将发给模型的消息列表（修改此字段只影响本次调用，不修改历史） */
-  callMessages: AgentMessage[]
-  /** 即将发给模型的 system prompt（中间件可追加摘要、工具描述等） */
-  system: string
-  /** 即将发给模型的工具定义列表（中间件可动态增减） */
-  tools: ToolDefinition[]
-
-  // === 模型响应（afterModel 阶段可读）===
-  lastResponse?: ChatResponse
-
-  // === 调用方只读属性（不持久化，语义同 React props）===
   /** 调用方传入的只读配置/意图，中间件通过此字段读取运行时参数 */
   readonly props: Readonly<Record<string, unknown>>
+  /** 运行期能力和配置 */
+  runtime: AgentRuntime
+  /** Agent Loop 内部控制状态 */
+  loopState: AgentLoopState
+}
 
-  // === 只读元信息 ===
-  readonly turnIndex: number
-  readonly provider: LLMProvider
-  readonly signal: AbortSignal
+/** 模型调用 Wrap 的本次真实请求对象 */
+export interface ModelCallRequest {
+  /** 当前 run/turn 的共享上下文 */
+  readonly context: RunContext
+  /** 本次调用使用的 provider，wrapper 可替换为 fallback provider */
+  provider: LLMProvider
+  /** 本次真实传入 provider 的聊天参数 */
+  params: ChatParams
+  /** 本次真实传入 provider 的调用选项 */
+  options: CallOptions
+}
+
+/** 工具调用 Wrap 的本次真实请求对象 */
+export interface ToolCallRequest {
+  /** 当前 run/turn 的共享上下文 */
+  readonly context: RunContext
+  readonly toolCallId: string
+  readonly toolName: string
+  /** 本次真实传入工具实现的输入 */
+  readonly toolInput: Record<string, unknown>
+  /** 可选动态工具实例；缺省时由核心 toolMap 按 toolName 查找 */
+  readonly tool?: Tool
 }
 
 /** 工具调用阶段的 Context，扩展了工具调用的相关字段 */

@@ -1,16 +1,26 @@
 import type { AgentEvent, AssistantContentBlock, SessionCheckpoint } from '@mech-code/shared'
 import type { AgentState } from './state.js'
 import type { RunParams, RunResult } from './types.js'
-import type { RunContext, ToolCallContext, ModelCallFn, ToolCallFn } from '../middleware/types.js'
+import type {
+  AgentLoopState,
+  AgentMiddleware,
+  AgentRuntime,
+  RunContext,
+  ToolCallContext,
+  ModelCallHandler,
+  ToolCallHandler,
+  ModelCallRequest,
+  ToolCallRequest,
+} from '../middleware/types.js'
 import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.js'
 import type { Tool, ToolOutput } from '../tools/types.js'
 import type { ToolDefinition } from '@mech-code/shared'
 import { MiddlewarePipeline } from '../middleware/pipeline.js'
 import { normalizeMessages } from '../message/normalize.js'
 import { buildChatParams } from '../message/builder.js'
-import type { AgentMiddleware } from '../middleware/types.js'
 import { SuspendSignal, isSuspendSignal } from './hitl.js'
-import { serializeAgentState, deserializeAgentState } from './state.js'
+import { deserializeAgentState, serializeAgentState } from './state.js'
+import { AssistantMessage, ToolMessage } from '../message/message.js'
 import type { ResumeParams, ToolCallDecision } from './hitl.js'
 
 /** Agent Loop 的运行配置（从 AgentConfig 解构而来） */
@@ -20,18 +30,41 @@ export interface LoopConfig {
   system: string
   middleware: AgentMiddleware[]
   maxTurns: number
-  cwd: string
 }
 
-// ============================================================
-// 辅助函数
-// ============================================================
+type ToolCall = { id: string; name: string; input: Record<string, unknown> }
 
-/**
- * 将 StreamResult 转换为 AsyncGenerator：
- * - yield 所有流式事件（供 agent.run() 向外转发）
- * - return 最终的 ChatResponse（供 loop 内部使用）
- */
+type ToolBatchResult =
+  | { status: 'completed'; results: Map<string, ToolOutput> }
+  | { status: 'suspended'; event: AgentEvent }
+
+interface InitLoopInfraResult {
+  signal: AbortSignal
+  pipeline: MiddlewarePipeline
+  toolMap: Map<string, Tool>
+  toolDefinitions: ToolDefinition[]
+  wrappedToolCall: ToolCallHandler
+  wrappedModelCall: ModelCallHandler
+  provider: LLMProvider
+}
+
+interface StateTracker {
+  notify(reason: string, keys?: string[]): void
+  flush(reason: string): AgentEvent | undefined
+}
+
+interface MainLoopContext {
+  maxTurns: number
+  pipeline: MiddlewarePipeline
+  wrappedToolCall: ToolCallHandler
+  wrappedModelCall: ModelCallHandler
+  toolMap: Map<string, Tool>
+  ctx: RunContext
+  tracker: StateTracker
+}
+
+const runtimeEventQueues = new WeakMap<AgentRuntime, AgentEvent[]>()
+
 async function* forwardStreamEvents(
   streamResult: StreamResult,
 ): AsyncGenerator<AgentEvent, ChatResponse, unknown> {
@@ -41,337 +74,143 @@ async function* forwardStreamEvents(
   return await streamResult.final
 }
 
-/** 从 AssistantContentBlock[] 中提取所有 tool_use 块 */
-function extractToolCalls(
-  content: AssistantContentBlock[],
-): Array<{ id: string; name: string; input: Record<string, unknown> }> {
+function extractToolCalls(content: AssistantContentBlock[]): ToolCall[] {
   return content.flatMap((block) => (block.type === 'tool_use' ? [block] : []))
 }
 
-/** 累加 usage 到 state */
 function accumulateUsage(
   state: AgentState,
-  usage: { inputTokens: number; outputTokens: number },
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+  },
 ): void {
   state.usage.inputTokens += usage.inputTokens
   state.usage.outputTokens += usage.outputTokens
+  if (usage.cacheReadTokens !== undefined) {
+    state.usage.cacheReadTokens = (state.usage.cacheReadTokens ?? 0) + usage.cacheReadTokens
+  }
+  if (usage.cacheWriteTokens !== undefined) {
+    state.usage.cacheWriteTokens = (state.usage.cacheWriteTokens ?? 0) + usage.cacheWriteTokens
+  }
 }
 
-/** 从 AbortSignal 中提取中断原因字符串 */
 function getAbortReason(signal: AbortSignal): string {
   return typeof signal.reason === 'string' ? signal.reason : 'user_abort'
 }
 
-// ============================================================
-// 工具批量执行（含中断捕获）
-// ============================================================
+function getTopLevelKeys(state: AgentState): string[] {
+  return Object.keys(state).sort()
+}
 
-/** 工具批量执行的结果 */
-type ToolBatchResult =
-  | { status: 'completed'; results: Map<string, ToolOutput> }
-  | { status: 'suspended'; event: AgentEvent }
+function stableSerialize(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key: string, current: unknown): unknown => {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) return current
+      const record = current as Record<string, unknown>
+      return Object.keys(record)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = record[key]
+          return acc
+        }, {})
+    }) ?? '__undefined__'
+  )
+}
 
-/**
- * 执行一批工具调用，统一处理 SuspendSignal 和 AbortSignal 中断。
- * 以 AsyncGenerator 形式 yield tool_executing / tool_result 事件，
- * 最终 return 完成结果或中断事件（suspended）。
- */
-async function* executeToolBatch(
-  toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
-  ctx: RunContext,
-  toolMap: Map<string, Tool>,
-  wrappedToolCall: ToolCallFn,
+function snapshotState(state: AgentState): Map<string, string> {
+  const snapshot = new Map<string, string>()
+  for (const key of getTopLevelKeys(state)) {
+    snapshot.set(key, stableSerialize(state[key]))
+  }
+  return snapshot
+}
+
+function diffState(prev: Map<string, string>, state: AgentState): string[] {
+  const keys = new Set([...prev.keys(), ...getTopLevelKeys(state)])
+  const changed: string[] = []
+  for (const key of keys) {
+    const next = stableSerialize(state[key])
+    if (prev.get(key) !== next) changed.push(key)
+  }
+  return changed.sort()
+}
+
+function createStateTracker(
   state: AgentState,
-  signal: AbortSignal,
-  turnIndex: number,
-): AsyncGenerator<AgentEvent, ToolBatchResult, unknown> {
-  const parallelCalls = toolCalls.filter((c) => toolMap.get(c.name)?.flags.parallelSafe)
-  const sequentialCalls = toolCalls.filter((c) => !toolMap.get(c.name)?.flags.parallelSafe)
+  runId: string,
+  loopState: AgentLoopState,
+): StateTracker {
+  let snapshot = snapshotState(state)
+  let pendingKeys = new Set<string>()
+  let pendingReason: string | undefined
 
-  // 辅助：生成 checkpoint
-  const makeCheckpoint = (
-    pendingCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
-    reason: string,
-    payload?: Record<string, unknown>,
-  ): SessionCheckpoint => ({
-    state: serializeAgentState(state),
-    pendingToolCalls: pendingCalls.map((c) => ({ id: c.id, name: c.name, input: c.input })),
-    reason,
-    payload,
-    turnIndex,
-    suspendedAt: Date.now(),
-  })
-
-  // 辅助：生成 suspended 事件
-  const makeSuspendedEvent = (
-    pendingCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
-    reason: string,
-    payload?: Record<string, unknown>,
-  ): AgentEvent => ({
-    type: 'suspended',
-    checkpoint: makeCheckpoint(pendingCalls, reason, payload),
-    reason,
-    payload,
-  })
-
-  const completedResults = new Map<string, ToolOutput>()
-
-  // ---- 并行工具执行 ----
-  if (parallelCalls.length > 0) {
-    // 并行工具：先发出所有 tool_executing 事件
-    for (const call of parallelCalls) {
-      yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
-    }
-    try {
-      const results = await Promise.all(
-        parallelCalls.map(async (call) => {
-          const toolCtx: ToolCallContext = {
-            ...ctx,
-            toolCallId: call.id,
-            toolName: call.name,
-            toolInput: call.input,
-          }
-          const output = await wrappedToolCall(toolCtx)
-          return { toolCallId: call.id, toolName: call.name, output }
-        }),
-      )
-      for (const r of results) {
-        completedResults.set(r.toolCallId, r.output)
-        yield {
-          type: 'tool_result',
-          toolCallId: r.toolCallId,
-          toolName: r.toolName,
-          output: r.output.content,
-          isError: r.output.isError ?? false,
-        }
+  return {
+    notify(reason, keys) {
+      pendingReason = reason
+      for (const key of keys ?? []) pendingKeys.add(key)
+    },
+    flush(reason) {
+      const changedKeys = new Set(diffState(snapshot, state))
+      for (const key of pendingKeys) changedKeys.add(key)
+      pendingKeys = new Set<string>()
+      if (changedKeys.size === 0) {
+        pendingReason = undefined
+        return undefined
       }
-    } catch (err) {
-      // 并行批次中断：整批（parallel + sequential）作为 pending
-      const allPending = [...parallelCalls, ...sequentialCalls]
-      if (isSuspendSignal(err)) {
-        return {
-          status: 'suspended',
-          event: makeSuspendedEvent(allPending, err.reason, err.payload),
-        }
+      loopState.stateRevision += 1
+      snapshot = snapshotState(state)
+      const event: AgentEvent = {
+        type: 'state_changed',
+        runId,
+        revision: loopState.stateRevision,
+        changedKeys: Array.from(changedKeys).sort(),
+        reason: pendingReason ?? reason,
+        state: serializeAgentState(state),
       }
-      if (signal.aborted) {
-        return {
-          status: 'suspended',
-          event: makeSuspendedEvent(allPending, getAbortReason(signal)),
-        }
-      }
-      throw err
-    }
+      pendingReason = undefined
+      return event
+    },
   }
-
-  // ---- 串行工具执行 ----
-  for (let i = 0; i < sequentialCalls.length; i++) {
-    const call = sequentialCalls[i]!
-
-    // 执行前检查中止信号
-    if (signal.aborted) {
-      const pending = sequentialCalls.slice(i)
-      return { status: 'suspended', event: makeSuspendedEvent(pending, getAbortReason(signal)) }
-    }
-
-    yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
-
-    try {
-      const toolCtx: ToolCallContext = {
-        ...ctx,
-        toolCallId: call.id,
-        toolName: call.name,
-        toolInput: call.input,
-      }
-      const output = await wrappedToolCall(toolCtx)
-      completedResults.set(call.id, output)
-      yield {
-        type: 'tool_result',
-        toolCallId: call.id,
-        toolName: call.name,
-        output: output.content,
-        isError: output.isError ?? false,
-      }
-    } catch (err) {
-      // 当前及后续工具作为 pending
-      const pending = sequentialCalls.slice(i)
-      if (isSuspendSignal(err)) {
-        return { status: 'suspended', event: makeSuspendedEvent(pending, err.reason, err.payload) }
-      }
-      if (signal.aborted) {
-        return { status: 'suspended', event: makeSuspendedEvent(pending, getAbortReason(signal)) }
-      }
-      throw err
-    }
-  }
-
-  return { status: 'completed', results: completedResults }
 }
 
-// ============================================================
-// 主循环引擎（runLoop 和 runLoopFromCheckpoint 共享）
-// ============================================================
+function flushRuntimeEvents(ctx: RunContext): AgentEvent[] {
+  const queue = runtimeEventQueues.get(ctx.runtime)
+  if (!queue?.length) return []
+  return queue.splice(0)
+}
 
-/** 主循环所需的运行时上下文 */
-interface MainLoopContext {
-  state: AgentState
-  startTurnIndex: number
-  maxTurns: number
-  system: string
-  toolDefinitions: ToolDefinition[]
-  toolMap: Map<string, Tool>
-  pipeline: MiddlewarePipeline
-  wrappedToolCall: ToolCallFn
-  wrappedModelCall: ModelCallFn
-  ctx: RunContext & { turnIndex: number }
-  signal: AbortSignal
+function bindMiddlewareState(state: AgentState, middleware: AgentMiddleware[]): void {
+  for (const mw of middleware) {
+    if (!mw.state) continue
+    for (const [key, value] of Object.entries(mw.state)) {
+      if (!(key in state)) {
+        state[key] = structuredClone(value)
+      }
+    }
+  }
 }
 
 /**
- * 主循环引擎 —— 编排 LLM 调用 → 工具分发 → 中间件 → 循环。
- * 由 runLoop 和 runLoopFromCheckpoint 共享调用。
- *
- * @returns 最终的 stopReason 和结束时的 turnIndex
+ * 1. 绑定中间件状态
+ * 2. 创建统一的 signal，监听外部 signal 的 abort 事件
+ * 3. 收集工具定义，检查工具名称冲突
+ * 4. 构建工具调用链和模型调用链的执行函数
+ * @param state
+ * @param config
+ * @param externalSignal
+ * @returns
  */
-async function* runMainLoop(
-  loopCtx: MainLoopContext,
-): AsyncGenerator<AgentEvent, { stopReason: RunResult['stopReason']; turnIndex: number }> {
-  const {
-    state,
-    startTurnIndex,
-    maxTurns,
-    system,
-    toolDefinitions,
-    toolMap,
-    pipeline,
-    wrappedToolCall,
-    wrappedModelCall,
-    ctx,
-    signal,
-  } = loopCtx
-
-  let turnIndex = startTurnIndex
-  let stopReason: RunResult['stopReason'] = 'end_turn'
-
-  while (turnIndex < maxTurns) {
-    // 检查中止信号（循环顶部：模型调用前，state 干净）
-    if (signal.aborted) {
-      stopReason = 'abort'
-      break
-    }
-
-    yield { type: 'turn_start', turnIndex }
-
-    // ---- PREPARE 阶段 ----
-    ctx.callMessages = [...state.messages] as typeof ctx.callMessages
-    ctx.system = system
-    ctx.tools = [...toolDefinitions]
-    ctx.lastResponse = undefined
-
-    await pipeline.runBeforeModel(ctx)
-
-    // ---- MODEL CALL 阶段 ----
-    const streamResult = await wrappedModelCall(ctx)
-    const response: ChatResponse = yield* forwardStreamEvents(streamResult)
-
-    ctx.lastResponse = response
-    await pipeline.runAfterModel(ctx)
-
-    // 追加 assistant 消息到真实状态
-    state.messages.push({ role: 'assistant', content: response.content })
-    accumulateUsage(state, response.usage)
-
-    // ---- DISPATCH 阶段 ----
-    const toolCalls = extractToolCalls(response.content)
-
-    if (toolCalls.length === 0) {
-      stopReason = 'end_turn'
-      yield { type: 'turn_end', turnIndex, usage: response.usage }
-      break
-    }
-
-    // ---- TOOL CALL 阶段 ----
-    const batchResult: ToolBatchResult = yield* executeToolBatch(
-      toolCalls,
-      ctx,
-      toolMap,
-      wrappedToolCall,
-      state,
-      signal,
-      turnIndex,
-    )
-
-    if (batchResult.status === 'suspended') {
-      yield batchResult.event
-      stopReason = 'suspended'
-      break
-    }
-
-    // 按原始顺序追加 tool 结果消息到 state
-    for (const call of toolCalls) {
-      const output = batchResult.results.get(call.id)
-      if (output) {
-        const toolMsg: (typeof state.messages)[number] = {
-          role: 'tool',
-          toolCallId: call.id,
-          content: output.isError ? `Error: ${output.content}` : output.content,
-        }
-        // 图片工具结果：附加 _imageData 供 serializer 生成多模态 content block
-        if (output.metadata?.type === 'image' && typeof output.metadata.base64 === 'string') {
-          toolMsg._imageData = {
-            base64: output.metadata.base64,
-            mediaType: output.metadata.mediaType as string,
-          }
-        }
-        state.messages.push(toolMsg)
-      }
-    }
-
-    yield { type: 'turn_end', turnIndex, usage: response.usage }
-
-    turnIndex++
-
-    if (turnIndex >= maxTurns) {
-      stopReason = 'max_turns'
-      break
-    }
-  }
-
-  return { stopReason, turnIndex }
-}
-
-// ============================================================
-// 初始化辅助（runLoop 和 runLoopFromCheckpoint 共享）
-// ============================================================
-
-const middlewareStoreDefaults = new WeakMap<AgentMiddleware, Record<string, unknown>>()
-
-function bindMiddlewareStores(state: AgentState, middleware: AgentMiddleware[]): void {
-  for (const mw of middleware) {
-    if (mw.store === undefined) continue
-    let defaults = middlewareStoreDefaults.get(mw)
-    if (!defaults) {
-      defaults = structuredClone(mw.store)
-      middlewareStoreDefaults.set(mw, defaults)
-    }
-    for (const [key, value] of Object.entries(defaults)) {
-      if (!(key in state.store)) {
-        state.store[key] = structuredClone(value)
-      }
-    }
-    mw.store = state.store
-  }
-}
-
-/** 初始化 Loop 运行时所需的公共基础设施 */
 function initLoopInfra(
   state: AgentState,
   config: LoopConfig,
   externalSignal: AbortSignal | undefined,
-) {
-  const { provider, tools, system, middleware, cwd } = config
+): InitLoopInfraResult {
+  const { provider, tools, middleware } = config
 
-  bindMiddlewareStores(state, middleware)
+  bindMiddlewareState(state, middleware)
 
   const controller = new AbortController()
   if (externalSignal) {
@@ -386,63 +225,54 @@ function initLoopInfra(
   const signal = controller.signal
 
   const pipeline = new MiddlewarePipeline(middleware)
-
-  // 合并 config.tools 与中间件声明的工具，冲突时抛错
   const toolMap = new Map<string, Tool>()
   const toolSourceMap = new Map<string, string>()
 
-  for (const t of tools) {
-    if (toolMap.has(t.name)) {
-      throw new Error(`工具名称冲突: "${t.name}" 在 AgentConfig.tools 中重复定义`)
+  for (const tool of tools) {
+    if (toolMap.has(tool.name)) {
+      throw new Error(`工具名称冲突: "${tool.name}" 在 AgentConfig.tools 中重复定义`)
     }
-    toolMap.set(t.name, t)
-    toolSourceMap.set(t.name, '__config__')
+    toolMap.set(tool.name, tool)
+    toolSourceMap.set(tool.name, '__config__')
   }
 
   for (const { tool, source } of pipeline.collectMiddlewareTools()) {
     if (toolMap.has(tool.name)) {
       const existingSource = toolSourceMap.get(tool.name)!
       throw new Error(
-        `工具名称冲突: "${tool.name}" 已由 ${existingSource === '__config__' ? 'AgentConfig.tools' : `中间件 "${existingSource}"`} 注册，` +
-          `中间件 "${source}" 不能重复注册同名工具`,
+        `工具名称冲突: "${tool.name}" 已由 ${
+          existingSource === '__config__' ? 'AgentConfig.tools' : `中间件 "${existingSource}"`
+        } 注册，` + `中间件 "${source}" 不能重复注册同名工具`,
       )
     }
     toolMap.set(tool.name, tool)
     toolSourceMap.set(tool.name, source)
   }
 
-  const toolDefinitions: ToolDefinition[] = Array.from(toolMap.values()).map((t) =>
-    t.toDefinition(),
-  )
+  const toolDefinitions = Array.from(toolMap.values()).map((tool) => tool.toDefinition())
 
-  // 构建 baseToolCall（工具执行，不含中间件）
-  const baseToolCall: ToolCallFn = async (toolCtx) => {
-    const tool = toolMap.get(toolCtx.toolName)
+  const baseToolCall: ToolCallHandler = async (request) => {
+    const tool = request.tool ?? toolMap.get(request.toolName)
     if (!tool) {
-      return { content: `工具 "${toolCtx.toolName}" 不存在`, isError: true }
+      return { content: `工具 "${request.toolName}" 不存在`, isError: true }
     }
-    const validation = await tool.validateInput(toolCtx.toolInput)
+    const validation = await tool.validateInput(request.toolInput)
     if (!validation.valid) {
       return { content: `输入校验失败: ${validation.error ?? '未知错误'}`, isError: true }
     }
-    return tool.execute(toolCtx.toolInput, {
-      cwd,
-      signal: toolCtx.signal,
-      store: toolCtx.state.store,
-    })
+    const toolCtx: ToolCallContext = {
+      ...request.context,
+      toolCallId: request.toolCallId,
+      toolName: request.toolName,
+      toolInput: request.toolInput,
+    }
+    return tool.execute(request.toolInput, toolCtx)
   }
 
   const wrappedToolCall = pipeline.buildToolCallChain(baseToolCall)
 
-  // baseModelCall：将投影字段传给 Provider
-  const baseModelCall: ModelCallFn = (callCtx) => {
-    const internalMessages = normalizeMessages(callCtx.callMessages)
-    const chatParams = buildChatParams({
-      messages: internalMessages,
-      system: callCtx.system || undefined,
-      tools: callCtx.tools.length > 0 ? callCtx.tools : undefined,
-    })
-    return Promise.resolve(provider.stream(chatParams, { signal: callCtx.signal }))
+  const baseModelCall: ModelCallHandler = (request) => {
+    return Promise.resolve(request.provider.stream(request.params, request.options))
   }
 
   const wrappedModelCall = pipeline.buildModelCallChain(baseModelCall)
@@ -454,99 +284,382 @@ function initLoopInfra(
     toolDefinitions,
     wrappedToolCall,
     wrappedModelCall,
-    system,
     provider,
   }
 }
 
-// ============================================================
-// 公共 API
-// ============================================================
+/**
+ * 创建 Agent Loop 的运行上下文，包括：
+ * 1. 运行时上下文（RunContext），包含 state、props、runtime 和 loopState
+ * 2. loopState 包含 turnIndex、stopReason、lastResponse、pendingToolCalls 和 stateRevision
+ * 3. runtime 包含 provider、system、tools、middleware、signal 和 emit 方法
+ * @param args
+ * @returns
+ */
+function createRunContext(args: {
+  state: AgentState
+  props: Readonly<Record<string, unknown>>
+  runId: string
+  provider: LLMProvider
+  system: string
+  tools: ToolDefinition[]
+  middleware: AgentMiddleware[]
+  signal: AbortSignal
+  initialTurnIndex: number
+  notifyStateChanged: (reason: string, keys?: string[]) => void
+}): RunContext {
+  const loopState: AgentLoopState = {
+    turnIndex: args.initialTurnIndex,
+    stopReason: 'end_turn',
+    lastResponse: undefined,
+    pendingToolCalls: [],
+    stateRevision: 0,
+  }
+  const eventQueue: AgentEvent[] = []
+
+  const runtime: AgentRuntime = {
+    runId: args.runId,
+    provider: args.provider,
+    system: args.system,
+    tools: [...args.tools],
+    middleware: args.middleware,
+    signal: args.signal,
+    emit(event) {
+      eventQueue.push(event)
+    },
+    notifyStateChanged(reason, keys) {
+      args.notifyStateChanged(reason, keys)
+    },
+  }
+  runtimeEventQueues.set(runtime, eventQueue)
+
+  return {
+    state: args.state,
+    props: args.props,
+    runtime,
+    loopState,
+  }
+}
+
+function createModelCallRequest(ctx: RunContext): ModelCallRequest {
+  const internalMessages = normalizeMessages(ctx.state.messages)
+  const params = buildChatParams({
+    messages: internalMessages,
+    system: ctx.runtime.system || undefined,
+    tools: ctx.runtime.tools.length > 0 ? ctx.runtime.tools : undefined,
+  })
+  return {
+    context: ctx,
+    provider: ctx.runtime.provider,
+    params,
+    options: { signal: ctx.runtime.signal },
+  }
+}
+
+function createToolCallRequest(ctx: RunContext, call: ToolCall): ToolCallRequest {
+  return {
+    context: ctx,
+    toolCallId: call.id,
+    toolName: call.name,
+    toolInput: call.input,
+  }
+}
 
 /**
- * Agent Loop 引擎 —— 编排 LLM 调用 → 工具分发 → 中间件 → 循环的完整周期。
- *
- * 设计要点：
- * - Loop 拥有控制流，中间件只通过 Context 信号影响状态转移
- * - state.messages 是唯一真相，callMessages 是每轮的只读投影
- * - 工具错误作为 tool role 消息反馈给 LLM，提供自愈机会
+ * 1. 发送累计的 AgentEvent 事件
+ * 2. 发送 stateChange 事件
+ * @param ctx
+ * @param tracker
+ * @param reason
  */
-export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGenerator<AgentEvent> {
-  const { state, signal: externalSignal, props: callerProps } = params
-  const maxTurns = params.maxTurns ?? config.maxTurns
-  const usageAtStart = { ...state.usage }
+function* flushBoundary(
+  ctx: RunContext,
+  tracker: StateTracker,
+  reason: string,
+): Generator<AgentEvent> {
+  for (const event of flushRuntimeEvents(ctx)) yield event
+  const stateEvent = tracker.flush(reason)
+  if (stateEvent) yield stateEvent
+}
 
-  const infra = initLoopInfra(state, config, externalSignal)
-  const { signal, pipeline, toolMap, toolDefinitions, wrappedToolCall, wrappedModelCall, system } =
-    infra
+function makeCheckpoint(
+  ctx: RunContext,
+  pendingCalls: ToolCall[],
+  reason: string,
+  payload?: Record<string, unknown>,
+): SessionCheckpoint {
+  return {
+    state: serializeAgentState(ctx.state),
+    pendingToolCalls: pendingCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    })),
+    reason,
+    payload,
+    turnIndex: ctx.loopState.turnIndex,
+    suspendedAt: Date.now(),
+  }
+}
 
-  const props = Object.freeze(callerProps ?? {})
+function makeSuspendedEvent(
+  ctx: RunContext,
+  pendingCalls: ToolCall[],
+  reason: string,
+  payload?: Record<string, unknown>,
+): AgentEvent {
+  return {
+    type: 'suspended',
+    checkpoint: makeCheckpoint(ctx, pendingCalls, reason, payload),
+    reason,
+    payload,
+  }
+}
 
-  // 开发模式下校验中间件声明的 propsSchema
-  if (process.env.NODE_ENV !== 'production') {
-    for (const mw of config.middleware) {
-      if (!mw.propsSchema) continue
-      for (const [key, descriptor] of Object.entries(mw.propsSchema)) {
-        if (descriptor.required && !(key in props)) {
-          console.warn(
-            `[mech-code] 中间件 "${mw.name}" 声明了必需的 prop "${key}" 但调用方未提供。` +
-              ` 描述: ${descriptor.description}`,
-          )
+async function* executeToolBatch(
+  toolCalls: ToolCall[],
+  ctx: RunContext,
+  toolMap: Map<string, Tool>,
+  wrappedToolCall: ToolCallHandler,
+): AsyncGenerator<AgentEvent, ToolBatchResult, unknown> {
+  const parallelCalls = toolCalls.filter((call) => toolMap.get(call.name)?.flags.parallelSafe)
+  const sequentialCalls = toolCalls.filter((call) => !toolMap.get(call.name)?.flags.parallelSafe)
+  const completedResults = new Map<string, ToolOutput>()
+
+  if (parallelCalls.length > 0) {
+    for (const call of parallelCalls) {
+      yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
+    }
+    try {
+      const results = await Promise.all(
+        parallelCalls.map(async (call) => {
+          const output = await wrappedToolCall(createToolCallRequest(ctx, call))
+          return { toolCallId: call.id, toolName: call.name, output }
+        }),
+      )
+      for (const result of results) {
+        completedResults.set(result.toolCallId, result.output)
+        yield {
+          type: 'tool_result',
+          toolCallId: result.toolCallId,
+          toolName: result.toolName,
+          output: result.output.content,
+          isError: result.output.isError ?? false,
         }
       }
+    } catch (err) {
+      const pending = [...parallelCalls, ...sequentialCalls]
+      if (isSuspendSignal(err)) {
+        return {
+          status: 'suspended',
+          event: makeSuspendedEvent(ctx, pending, err.reason, err.payload),
+        }
+      }
+      if (ctx.runtime.signal.aborted) {
+        return {
+          status: 'suspended',
+          event: makeSuspendedEvent(ctx, pending, getAbortReason(ctx.runtime.signal)),
+        }
+      }
+      throw err
     }
   }
 
-  let turnIndex = 0
+  for (let index = 0; index < sequentialCalls.length; index++) {
+    const call = sequentialCalls[index]!
+    if (ctx.runtime.signal.aborted) {
+      return {
+        status: 'suspended',
+        event: makeSuspendedEvent(
+          ctx,
+          sequentialCalls.slice(index),
+          getAbortReason(ctx.runtime.signal),
+        ),
+      }
+    }
 
-  const ctx: RunContext & { turnIndex: number } = {
-    state,
-    callMessages: [],
-    system,
-    tools: toolDefinitions,
-    lastResponse: undefined,
-    props,
-    get turnIndex() {
-      return turnIndex
-    },
-    provider: infra.provider,
-    signal,
+    yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
+
+    try {
+      const output = await wrappedToolCall(createToolCallRequest(ctx, call))
+      completedResults.set(call.id, output)
+      yield {
+        type: 'tool_result',
+        toolCallId: call.id,
+        toolName: call.name,
+        output: output.content,
+        isError: output.isError ?? false,
+      }
+    } catch (err) {
+      const pending = sequentialCalls.slice(index)
+      if (isSuspendSignal(err)) {
+        return {
+          status: 'suspended',
+          event: makeSuspendedEvent(ctx, pending, err.reason, err.payload),
+        }
+      }
+      if (ctx.runtime.signal.aborted) {
+        return {
+          status: 'suspended',
+          event: makeSuspendedEvent(ctx, pending, getAbortReason(ctx.runtime.signal)),
+        }
+      }
+      throw err
+    }
   }
 
-  const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-  yield { type: 'agent_run_start', runId, messages: state.messages }
+  return { status: 'completed', results: completedResults }
+}
 
-  let stopReason: RunResult['stopReason'] = 'end_turn'
+function appendToolMessages(
+  ctx: RunContext,
+  toolCalls: ToolCall[],
+  results: Map<string, ToolOutput>,
+): void {
+  for (const call of toolCalls) {
+    const output = results.get(call.id)
+    if (!output) continue
+    const metadata: Record<string, unknown> = {}
+    if (output.metadata?.type === 'image' && typeof output.metadata.base64 === 'string') {
+      metadata.imageData = {
+        base64: output.metadata.base64,
+        mediaType: output.metadata.mediaType as string,
+      }
+    }
+    const toolMessage = new ToolMessage(
+      call.id,
+      output.isError ? `Error: ${output.content}` : output.content,
+      { metadata },
+    )
+    ctx.state.messages.push(toolMessage)
+  }
+}
+
+async function* runMainLoop(
+  loopCtx: MainLoopContext,
+): AsyncGenerator<AgentEvent, { stopReason: RunResult['stopReason']; turnIndex: number }> {
+  const { maxTurns, pipeline, wrappedToolCall, wrappedModelCall, toolMap, ctx, tracker } = loopCtx
+  const loopState = ctx.loopState
+
+  while (loopState.turnIndex < maxTurns) {
+    if (ctx.runtime.signal.aborted) {
+      loopState.stopReason = 'abort'
+      break
+    }
+
+    yield { type: 'turn_start', turnIndex: loopState.turnIndex }
+
+    loopState.lastResponse = undefined
+    await pipeline.runBeforeModel(ctx)
+    yield* flushBoundary(ctx, tracker, 'before_model')
+
+    const streamResult = await wrappedModelCall(createModelCallRequest(ctx))
+    const response = yield* forwardStreamEvents(streamResult)
+
+    loopState.lastResponse = response
+    await pipeline.runAfterModel(ctx)
+    yield* flushBoundary(ctx, tracker, 'after_model')
+
+    ctx.state.messages.push(new AssistantMessage(response.content))
+    accumulateUsage(ctx.state, response.usage)
+    yield* flushBoundary(ctx, tracker, 'assistant_message')
+
+    const toolCalls = extractToolCalls(response.content)
+    loopState.pendingToolCalls = toolCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    }))
+
+    if (toolCalls.length === 0) {
+      loopState.stopReason = 'end_turn'
+      yield { type: 'turn_end', turnIndex: loopState.turnIndex, usage: response.usage }
+      yield* flushBoundary(ctx, tracker, 'turn_end')
+      break
+    }
+
+    const batchResult = yield* executeToolBatch(toolCalls, ctx, toolMap, wrappedToolCall)
+    yield* flushBoundary(ctx, tracker, 'tool_batch')
+
+    if (batchResult.status === 'suspended') {
+      yield batchResult.event
+      loopState.stopReason = 'suspended'
+      break
+    }
+
+    appendToolMessages(ctx, toolCalls, batchResult.results)
+    loopState.pendingToolCalls = []
+    yield* flushBoundary(ctx, tracker, 'tool_messages')
+
+    yield { type: 'turn_end', turnIndex: loopState.turnIndex, usage: response.usage }
+    yield* flushBoundary(ctx, tracker, 'turn_end')
+
+    loopState.turnIndex++
+    if (loopState.turnIndex >= maxTurns) {
+      loopState.stopReason = 'max_turns'
+      break
+    }
+  }
+
+  return { stopReason: loopState.stopReason, turnIndex: loopState.turnIndex }
+}
+
+export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGenerator<AgentEvent> {
+  const { state, props: callerProps } = params
+  const maxTurns = params.config?.maxTurns ?? config.maxTurns
+  const externalSignal = params.config?.signal
+  const usageAtStart = { ...state.usage }
+  const infra = initLoopInfra(state, config, externalSignal)
+  const props = Object.freeze(callerProps ?? {})
+  const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+
+  const trackerRef: { current?: StateTracker } = {}
+  const ctx = createRunContext({
+    state,
+    props,
+    runId,
+    provider: infra.provider,
+    system: config.system,
+    tools: infra.toolDefinitions,
+    middleware: config.middleware,
+    signal: infra.signal,
+    initialTurnIndex: 0,
+    notifyStateChanged(reason, keys) {
+      trackerRef.current?.notify(reason, keys)
+    },
+  })
+  const tracker = createStateTracker(state, runId, ctx.loopState)
+  trackerRef.current = tracker
+
+  yield { type: 'agent_run_start', runId, messages: state.messages }
+  yield* flushBoundary(ctx, tracker, 'agent_run_start')
 
   try {
-    await pipeline.runBeforeAgent(ctx)
+    await infra.pipeline.runBeforeAgent(ctx)
+    yield* flushBoundary(ctx, tracker, 'before_agent')
 
-    const result: { stopReason: RunResult['stopReason']; turnIndex: number } = yield* runMainLoop({
-      state,
-      startTurnIndex: 0,
+    yield* runMainLoop({
       maxTurns,
-      system,
-      toolDefinitions,
-      toolMap,
-      pipeline,
-      wrappedToolCall,
-      wrappedModelCall,
+      pipeline: infra.pipeline,
+      wrappedToolCall: infra.wrappedToolCall,
+      wrappedModelCall: infra.wrappedModelCall,
+      toolMap: infra.toolMap,
       ctx,
-      signal,
+      tracker,
     })
-
-    stopReason = result.stopReason
-    turnIndex = result.turnIndex
   } catch (err) {
-    stopReason = signal.aborted ? 'abort' : 'error'
+    ctx.loopState.stopReason = infra.signal.aborted ? 'abort' : 'error'
     throw err
   } finally {
-    await pipeline.runAfterAgent(ctx)
+    await infra.pipeline.runAfterAgent(ctx)
+    yield* flushBoundary(ctx, tracker, 'after_agent')
   }
 
   const runUsage = {
     inputTokens: state.usage.inputTokens - usageAtStart.inputTokens,
     outputTokens: state.usage.outputTokens - usageAtStart.outputTokens,
+    cacheReadTokens: (state.usage.cacheReadTokens ?? 0) - (usageAtStart.cacheReadTokens ?? 0),
+    cacheWriteTokens: (state.usage.cacheWriteTokens ?? 0) - (usageAtStart.cacheWriteTokens ?? 0),
   }
 
   yield {
@@ -554,125 +667,100 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     runId,
     usage: runUsage,
     messages: state.messages,
-    stopReason,
+    stopReason: ctx.loopState.stopReason,
   }
+  yield* flushBoundary(ctx, tracker, 'agent_run_end')
 }
 
-/**
- * 从 SessionCheckpoint 恢复运行的 Loop。
- * 先处理 pending tool calls（根据 decisions），再进入正常 Loop 循环。
- */
 export async function* runLoopFromCheckpoint(
   params: ResumeParams,
   config: LoopConfig,
 ): AsyncGenerator<AgentEvent> {
   const { checkpoint, decisions } = params
   const { pendingToolCalls, turnIndex: resumeTurnIndex } = checkpoint
-
-  // 从 checkpoint 恢复 AgentState
   const state = deserializeAgentState(checkpoint.state)
-  const maxTurns = params.maxTurns ?? config.maxTurns
+  const maxTurns = params.config?.maxTurns ?? config.maxTurns
+  const externalSignal = params.config?.signal
   const usageAtStart = { ...state.usage }
-
-  const infra = initLoopInfra(state, config, params.signal)
-  const { signal, pipeline, toolMap, toolDefinitions, wrappedToolCall, wrappedModelCall, system } =
-    infra
-
+  const infra = initLoopInfra(state, config, externalSignal)
   const props = Object.freeze(params.props ?? {})
-
-  let turnIndex = resumeTurnIndex
-
-  const ctx: RunContext & { turnIndex: number } = {
-    state,
-    callMessages: [],
-    system,
-    tools: toolDefinitions,
-    lastResponse: undefined,
-    props,
-    get turnIndex() {
-      return turnIndex
-    },
-    provider: infra.provider,
-    signal,
-  }
-
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-  yield { type: 'agent_run_start', runId, messages: state.messages }
 
-  let stopReason: RunResult['stopReason'] = 'end_turn'
+  const trackerRef: { current?: StateTracker } = {}
+  const ctx = createRunContext({
+    state,
+    props,
+    runId,
+    provider: infra.provider,
+    system: config.system,
+    tools: infra.toolDefinitions,
+    middleware: config.middleware,
+    signal: infra.signal,
+    initialTurnIndex: resumeTurnIndex,
+    notifyStateChanged(reason, keys) {
+      trackerRef.current?.notify(reason, keys)
+    },
+  })
+  const tracker = createStateTracker(state, runId, ctx.loopState)
+  trackerRef.current = tracker
+
+  yield { type: 'agent_run_start', runId, messages: state.messages }
+  yield* flushBoundary(ctx, tracker, 'agent_run_start')
 
   try {
-    await pipeline.runBeforeAgent(ctx)
+    await infra.pipeline.runBeforeAgent(ctx)
+    yield* flushBoundary(ctx, tracker, 'before_agent')
 
-    // === 阶段 1：处理 pending tool calls ===
     for (const call of pendingToolCalls) {
       const decision: ToolCallDecision | undefined = decisions[call.id]
-
-      if (!decision || decision.action === 'approve') {
-        // 批准：正常执行
-        const toolCtx: ToolCallContext = {
-          ...ctx,
-          toolCallId: call.id,
-          toolName: call.name,
-          toolInput: call.input,
-        }
-        const output = await wrappedToolCall(toolCtx)
-        state.messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          content: output.isError ? `Error: ${output.content}` : output.content,
-        })
-      } else if (decision.action === 'deny') {
-        // 拒绝：写入拒绝消息
-        state.messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          content: `Error: 用户拒绝执行此操作${decision.reason ? ': ' + decision.reason : ''}`,
-        })
-      } else if (decision.action === 'modify') {
-        // 修改参数后执行
-        const toolCtx: ToolCallContext = {
-          ...ctx,
-          toolCallId: call.id,
-          toolName: call.name,
-          toolInput: decision.input,
-        }
-        const output = await wrappedToolCall(toolCtx)
-        state.messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          content: output.isError ? `Error: ${output.content}` : output.content,
-        })
+      if (decision?.action === 'deny') {
+        state.messages.push(
+          new ToolMessage(
+            call.id,
+            `Error: 用户拒绝执行此操作${decision.reason ? ': ' + decision.reason : ''}`,
+          ),
+        )
+        continue
       }
+
+      const input = decision?.action === 'modify' ? decision.input : call.input
+      const output = await infra.wrappedToolCall(
+        createToolCallRequest(ctx, {
+          id: call.id,
+          name: call.name,
+          input,
+        }),
+      )
+      state.messages.push(
+        new ToolMessage(call.id, output.isError ? `Error: ${output.content}` : output.content),
+      )
     }
+    ctx.loopState.pendingToolCalls = []
+    yield* flushBoundary(ctx, tracker, 'resume_pending_tools')
 
-    // === 阶段 2：进入正常 Loop 循环（从下一轮开始） ===
-    const result: { stopReason: RunResult['stopReason']; turnIndex: number } = yield* runMainLoop({
-      state,
-      startTurnIndex: resumeTurnIndex + 1,
+    ctx.loopState.turnIndex = resumeTurnIndex + 1
+    yield* runMainLoop({
       maxTurns,
-      system,
-      toolDefinitions,
-      toolMap,
-      pipeline,
-      wrappedToolCall,
-      wrappedModelCall,
+      pipeline: infra.pipeline,
+      wrappedToolCall: infra.wrappedToolCall,
+      wrappedModelCall: infra.wrappedModelCall,
+      toolMap: infra.toolMap,
       ctx,
-      signal,
+      tracker,
     })
-
-    stopReason = result.stopReason
-    turnIndex = result.turnIndex
   } catch (err) {
-    stopReason = signal.aborted ? 'abort' : 'error'
+    ctx.loopState.stopReason = infra.signal.aborted ? 'abort' : 'error'
     throw err
   } finally {
-    await pipeline.runAfterAgent(ctx)
+    await infra.pipeline.runAfterAgent(ctx)
+    yield* flushBoundary(ctx, tracker, 'after_agent')
   }
 
   const runUsage = {
     inputTokens: state.usage.inputTokens - usageAtStart.inputTokens,
     outputTokens: state.usage.outputTokens - usageAtStart.outputTokens,
+    cacheReadTokens: (state.usage.cacheReadTokens ?? 0) - (usageAtStart.cacheReadTokens ?? 0),
+    cacheWriteTokens: (state.usage.cacheWriteTokens ?? 0) - (usageAtStart.cacheWriteTokens ?? 0),
   }
 
   yield {
@@ -680,8 +768,9 @@ export async function* runLoopFromCheckpoint(
     runId,
     usage: runUsage,
     messages: state.messages,
-    stopReason,
+    stopReason: ctx.loopState.stopReason,
   }
+  yield* flushBoundary(ctx, tracker, 'agent_run_end')
 }
 
 export { SuspendSignal, isSuspendSignal, serializeAgentState, deserializeAgentState }

@@ -234,25 +234,25 @@ clearTools() // 清空注册表（测试时使用）
 - **Hook 模式** —— 读写 Context 状态（日志、上下文压缩、token 计量）
 - **Wrap 模式** —— 包裹核心操作（重试、缓存、熔断、权限拦截）
 
-职责边界：**Hook 只做状态读写，Wrap 只做行为包裹**，不混合。
+职责边界：**Hook 处理生命周期状态，Wrap 处理单次真实调用**。如果要调整最终传给模型 API 或工具实现的入参，使用 `wrapModelCall` / `wrapToolCall`。
 
 ### 中间件接口
 
 ```ts
 interface AgentMiddleware {
   name: string
-  /** 默认共享状态：合并到 AgentState.store，其他中间件和工具可读写，支持持久化 */
-  store?: Record<string, unknown>
+  /** 默认 AgentState 扩展字段，合并到 AgentState 顶层 */
+  state?: Record<string, unknown>
 
   // === Hook 模式：状态观察与修改 ===
   beforeAgent?(ctx: RunContext): Awaitable<void> // run 开始，做初始化
   afterAgent?(ctx: RunContext): Awaitable<void> // run 结束，类似 finally
-  beforeModel?(ctx: RunContext): Awaitable<void> // 修改 callMessages / system / tools
+  beforeModel?(ctx: RunContext): Awaitable<void> // 整理 state.messages，维护生命周期状态
   afterModel?(ctx: RunContext): Awaitable<void> // 观察模型输出，更新统计
 
-  // === Wrap 模式：包裹核心操作 ===
-  wrapModelCall?(next: ModelCallFn, ctx: RunContext): Awaitable<StreamResult>
-  wrapToolCall?(next: ToolCallFn, ctx: ToolCallContext): Awaitable<ToolOutput>
+  // === Wrap 模式：拦截单次真实调用 ===
+  wrapModelCall?(request: ModelCallRequest, handler: ModelCallHandler): Awaitable<StreamResult>
+  wrapToolCall?(request: ToolCallRequest, handler: ToolCallHandler): Awaitable<ToolOutput>
 }
 ```
 
@@ -264,17 +264,17 @@ import { Middleware } from '@mech-code/core'
 class TokenCounterMiddleware extends Middleware {
   name = 'token-counter'
 
-  // 默认共享状态：运行时会绑定到 AgentState.store
-  store = { totalInputTokens: 0, totalOutputTokens: 0 }
+  // 默认 state 扩展字段：run 开始时合并到 AgentState
+  state = { totalInputTokens: 0, totalOutputTokens: 0 }
 
   // 私有状态：仅自身可见
   private threshold = 100_000
 
   afterModel(ctx: RunContext) {
-    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    this.store.totalInputTokens += inputTokens
-    this.store.totalOutputTokens += outputTokens
-    if (this.store.totalInputTokens > this.threshold) {
+    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
+    ctx.state.totalInputTokens = (ctx.state.totalInputTokens as number) + inputTokens
+    ctx.state.totalOutputTokens = (ctx.state.totalOutputTokens as number) + outputTokens
+    if ((ctx.state.totalInputTokens as number) > this.threshold) {
       console.warn('累计 input token 已超过阈值')
     }
   }
@@ -286,16 +286,13 @@ class TokenCounterMiddleware extends Middleware {
 ```ts
 interface RunContext {
   state: AgentState // 完整会话状态（可变引用，修改会持久化）
-  callMessages: Message[] // 本轮发给模型的消息快照（beforeModel 可改写）
-  system: string // 本轮 system prompt（beforeModel 可追加）
-  tools: ToolDefinition[] // 本轮工具列表（beforeModel 可动态增减）
-  lastResponse?: ChatResponse // afterModel 阶段可读（只读观察点）
-  readonly turnIndex: number
-  readonly signal: AbortSignal
+  readonly props: Readonly<Record<string, unknown>> // 只读运行环境，如 cwd
+  runtime: AgentRuntime // provider、system、tools、signal、emit、notifyStateChanged
+  loopState: AgentLoopState // turnIndex、stopReason、lastResponse、pendingToolCalls
 }
 ```
 
-`state` 是持久化的唯一真相，对其的修改跨轮次保留。`callMessages` 是每轮的临时投影，中间件修改只影响本次模型调用，不污染历史记录。`afterModel` 中的 `lastResponse` 是只读观察点，不应修改模型输出内容。
+`state` 是持久化的唯一真相，对其的修改跨轮次保留。中间件需要影响本次模型输入时，改写 `ModelCallRequest.params`；需要影响本次工具输入时，改写 `ToolCallRequest.toolInput`。
 
 ### 示例：日志中间件（Hook 模式）
 
@@ -305,11 +302,11 @@ import type { AgentMiddleware } from '@mech-code/core'
 const loggerMiddleware: AgentMiddleware = {
   name: 'logger',
   beforeModel(ctx) {
-    console.log(`[Turn ${ctx.turnIndex}] 发送 ${ctx.callMessages.length} 条消息`)
+    console.log(`[Turn ${ctx.loopState.turnIndex}] 发送 ${ctx.state.messages.length} 条消息`)
   },
   afterModel(ctx) {
-    const { inputTokens, outputTokens } = ctx.lastResponse!.usage
-    console.log(`[Turn ${ctx.turnIndex}] token: ${inputTokens} in / ${outputTokens} out`)
+    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
+    console.log(`[Turn ${ctx.loopState.turnIndex}] token: ${inputTokens} in / ${outputTokens} out`)
   },
 }
 ```
@@ -319,10 +316,10 @@ const loggerMiddleware: AgentMiddleware = {
 ```ts
 const retryMiddleware: AgentMiddleware = {
   name: 'retry',
-  async wrapModelCall(next, ctx) {
+  async wrapModelCall(request, handler) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await next(ctx)
+        return await handler(request)
       } catch (e) {
         if (!(e instanceof ProviderError) || !e.retryable || attempt === 2) throw e
         await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
@@ -338,14 +335,14 @@ const retryMiddleware: AgentMiddleware = {
 ```ts
 const permissionMiddleware: AgentMiddleware = {
   name: 'permission',
-  async wrapToolCall(next, ctx) {
-    const tool = getTool(ctx.toolName)
+  async wrapToolCall(request, handler) {
+    const tool = request.tool ?? getTool(request.toolName)
     // 只读工具自动放行，写操作工具需要用户确认
     if (!tool?.flags.readonly) {
-      const confirmed = await askUser(`是否允许执行工具 "${ctx.toolName}"？`)
+      const confirmed = await askUser(`是否允许执行工具 "${request.toolName}"？`)
       if (!confirmed) return { content: '用户已拒绝此操作', isError: true }
     }
-    return next(ctx)
+    return handler(request)
   },
 }
 ```
@@ -423,7 +420,6 @@ const agent = createAgent({
   system: '...',       // 系统提示词
   middleware: [...],   // 中间件列表
   maxTurns: 20,        // 最大循环轮数（默认 20）
-  cwd: process.cwd(),  // 工具执行的工作目录
 })
 ```
 
@@ -447,12 +443,16 @@ Agent 会话状态由调用方持有并传入每次 `run()`。Agent 在执行过
 
 ```ts
 const state = createAgentState()
-// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 }, store: {} }
+// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 } }
 
 // 第一轮对话
 state.messages.push({ role: 'user', content: '列出 src/ 下的文件' })
-for await (const event of agent.run({ state, signal: abortController.signal })) {
-  // AgentEvent: agent_run_start | turn_start | text_delta | tool_executing | ... | agent_run_end
+for await (const event of agent.run({
+  state,
+  config: { signal: abortController.signal },
+  props: { cwd: process.cwd(), platform: process.platform },
+})) {
+  // AgentEvent: agent_run_start | state_changed | turn_start | text_delta | ... | agent_run_end
 }
 
 // 第二轮对话 —— 同一个 state 继续
@@ -488,7 +488,9 @@ const summaryAgent = mainAgent.fork({
 | `AgentState` / `AgentMessage`              | 会话状态类型                                  |
 | `RunParams` / `RunResult`                  | Agent 运行参数与结果                          |
 | `RunContext` / `ToolCallContext`           | 中间件上下文类型                              |
-| `ModelCallFn` / `ToolCallFn` / `Awaitable` | Wrap 模式中间件函数类型                       |
+| `ModelCallRequest` / `ToolCallRequest`     | Wrap 模式的单次调用请求对象                   |
+| `ModelCallHandler` / `ToolCallHandler`     | Wrap 模式继续向内执行的 handler 类型          |
+| `Awaitable`                                | 同步或异步返回值辅助类型                      |
 | `Middleware`                               | 有状态中间件基类                              |
 | `MiddlewarePipeline`                       | 管道执行器（进阶使用）                        |
 | `AnthropicProvider`                        | Anthropic Provider                            |

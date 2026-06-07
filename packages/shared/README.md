@@ -36,7 +36,7 @@ const msg: Message = {
 
 ### Agent event types
 
-All 19 event types emitted by `agent.run()`:
+All 21 event types emitted by `agent.run()`:
 
 ```ts
 import type { AgentEvent } from '@mech-code/shared'
@@ -55,6 +55,9 @@ import type { AgentEvent } from '@mech-code/shared'
 
 // MCP calls
 ;'mcp_start' | 'mcp_executing' | 'mcp_result' | 'mcp_end'
+
+// State snapshots
+;('state_changed')
 
 // Turn management
 'turn_start' | 'turn_end'

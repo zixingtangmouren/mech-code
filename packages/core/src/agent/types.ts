@@ -2,12 +2,18 @@ import type { SessionCheckpoint, Usage } from '@mech-code/shared'
 import type { AgentState } from './state.js'
 export type { AgentMessage, AgentState } from './state.js'
 
+export interface RunConfig {
+  /** 最大循环轮数，覆盖 AgentConfig.maxTurns */
+  maxTurns?: number
+  /** 中止信号，用于取消当前 run */
+  signal?: AbortSignal
+}
+
 export interface RunParams {
   /** 会话状态（由调用方持有，run() 直接修改此对象） */
   state: AgentState
-  /** 最大循环轮数，覆盖 AgentConfig.maxTurns */
-  maxTurns?: number
-  signal?: AbortSignal
+  /** 本次 run 的运行配置 */
+  config?: RunConfig
   /**
    * 调用方传入的只读属性（每次 run 临时有效，不持久化到 checkpoint）。
    * 用于向中间件传递运行时配置/意图（如 userId、requestId、featureFlags 等）。

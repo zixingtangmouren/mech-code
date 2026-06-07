@@ -3,7 +3,7 @@ import { resolve, dirname, basename } from 'node:path'
 import { z } from 'zod'
 import { expandPath, levenshtein } from '@mech-code/shared'
 import { defineTool } from '@mech-code/core'
-import type { ReadCacheEntry } from '@mech-code/core'
+import type { ReadCacheEntry, ToolRunContext } from '@mech-code/core'
 
 // === 常量 ===
 
@@ -84,14 +84,18 @@ async function findSimilarFile(filePath: string): Promise<string | undefined> {
 
 type ReadFileState = Record<string, ReadCacheEntry>
 
-/** 获取 readFileState 缓存（从 store 中取出，惰性初始化） */
-function getReadFileState(store: Record<string, unknown>): ReadFileState {
-  const state = store['readFileState']
+function getCwd(ctx: ToolRunContext): string {
+  return typeof ctx.props.cwd === 'string' ? ctx.props.cwd : process.cwd()
+}
+
+/** 获取 readFileState 缓存（从 AgentState 顶层取出，惰性初始化） */
+function getReadFileState(ctx: ToolRunContext): ReadFileState {
+  const state = ctx.state['readFileState']
   if (state && typeof state === 'object' && !Array.isArray(state)) {
     return state as ReadFileState
   }
   const next: ReadFileState = {}
-  store['readFileState'] = next
+  ctx.state['readFileState'] = next
   return next
 }
 
@@ -278,8 +282,8 @@ export const editFileTool = defineTool({
 
   async execute(input, ctx) {
     // 路径解析：展开 ~，然后相对 cwd 解析
-    const resolvedPath = resolve(ctx.cwd, expandPath(input.path))
-    const readFileState = getReadFileState(ctx.store)
+    const resolvedPath = resolve(getCwd(ctx), expandPath(input.path))
+    const readFileState = getReadFileState(ctx)
 
     // === old_string 为空：创建新文件 / 向空文件写入 ===
     if (input.old_string === '') {

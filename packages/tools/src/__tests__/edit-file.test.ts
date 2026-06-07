@@ -14,11 +14,7 @@ beforeEach(async () => {
   testDir = join(tmpdir(), `edit-file-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   await mkdir(testDir, { recursive: true })
   readFileState = {}
-  ctx = {
-    cwd: testDir,
-    signal: new AbortController().signal,
-    store: { readFileState },
-  }
+  ctx = createToolContext({ readFileState })
 })
 
 afterEach(async () => {
@@ -37,6 +33,54 @@ async function createTestFile(name: string, content: string) {
     content,
   }
   return filePath
+}
+
+function createToolContext(
+  options: { readFileState?: Record<string, ReadCacheEntry> } = {},
+): ToolRunContext {
+  return {
+    state: {
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+      ...(options.readFileState ? { readFileState: options.readFileState } : {}),
+    },
+    props: Object.freeze({ cwd: testDir }),
+    runtime: {
+      runId: 'run-test',
+      provider: {
+        name: 'mock',
+        async chat() {
+          return { content: [], usage: { inputTokens: 0, outputTokens: 0 }, stopReason: 'end_turn' }
+        },
+        stream() {
+          return {
+            stream: (async function* () {})(),
+            final: Promise.resolve({
+              content: [],
+              usage: { inputTokens: 0, outputTokens: 0 },
+              stopReason: 'end_turn',
+            }),
+            abort() {},
+          }
+        },
+      },
+      system: '',
+      tools: [],
+      middleware: [],
+      signal: new AbortController().signal,
+      emit() {},
+      notifyStateChanged() {},
+    },
+    loopState: {
+      turnIndex: 0,
+      stopReason: 'end_turn',
+      pendingToolCalls: [],
+      stateRevision: 0,
+    },
+    toolCallId: 'tool-call-test',
+    toolName: 'edit_file',
+    toolInput: {},
+  }
 }
 
 describe('edit_file', () => {
@@ -150,20 +194,16 @@ describe('edit_file', () => {
       expect(result.content).toContain('尚未被读取')
     })
 
-    it('空 store 会初始化 readFileState 并执行读前置校验', async () => {
+    it('空 state 会初始化 readFileState 并执行读前置校验', async () => {
       await writeFile(join(testDir, 'test.ts'), 'hello', 'utf-8')
-      const ctxNoState: ToolRunContext = {
-        cwd: testDir,
-        signal: new AbortController().signal,
-        store: {},
-      }
+      const ctxNoState = createToolContext()
       const result = await editFileTool.execute(
         { path: 'test.ts', old_string: 'hello', new_string: 'world', replace_all: false },
         ctxNoState,
       )
       expect(result.isError).toBe(true)
       expect(result.content).toContain('尚未被读取')
-      expect(ctxNoState.store['readFileState']).toEqual({})
+      expect(ctxNoState.state['readFileState']).toEqual({})
     })
   })
 

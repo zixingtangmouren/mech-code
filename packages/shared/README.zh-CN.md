@@ -36,7 +36,7 @@ const msg: Message = {
 
 ### Agent 事件类型
 
-`agent.run()` 发出的全部 19 种事件类型：
+`agent.run()` 发出的全部 21 种事件类型：
 
 ```ts
 import type { AgentEvent } from '@mech-code/shared'
@@ -55,6 +55,9 @@ import type { AgentEvent } from '@mech-code/shared'
 
 // MCP 调用
 ;'mcp_start' | 'mcp_executing' | 'mcp_result' | 'mcp_end'
+
+// 状态快照
+;('state_changed')
 
 // 轮次管理
 'turn_start' | 'turn_end'

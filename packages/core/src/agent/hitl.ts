@@ -1,4 +1,5 @@
 import type { SessionCheckpoint } from '@mech-code/shared'
+import type { RunConfig } from './types.js'
 
 export type { SessionCheckpoint, SerializableAgentState, PendingToolCall } from '@mech-code/shared'
 
@@ -36,9 +37,8 @@ export interface ResumeParams {
   checkpoint: SessionCheckpoint
   /** 人工决策结果（按 toolCallId 索引） */
   decisions: Record<string, ToolCallDecision>
-  /** 最大轮数（可选，覆盖默认） */
-  maxTurns?: number
-  signal?: AbortSignal
+  /** 本次恢复运行的运行配置 */
+  config?: RunConfig
   /** 恢复运行时传入的只读属性（同 RunParams.props，不持久化） */
   props?: Readonly<Record<string, unknown>>
 }

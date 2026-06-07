@@ -64,9 +64,11 @@ export interface PendingToolCall {
 
 /** AgentState 的可序列化形式，用于 checkpoint 的持久化与恢复。 */
 export interface SerializableAgentState {
-  messages: (Message & { _compressed?: true })[]
+  messages: (Message & {
+    metadata?: Record<string, unknown>
+  })[]
   usage: Usage
-  store: Record<string, unknown>
+  [key: string]: unknown
 }
 
 /**
@@ -106,6 +108,7 @@ export type AgentEvent =
   | MCPExecutingEvent
   | MCPResultEvent
   | MCPEndEvent
+  | StateChangedEvent
   | TurnStartEvent
   | TurnEndEvent
   | SuspendedEvent
@@ -208,6 +211,15 @@ export interface MCPResultEvent {
 export interface MCPEndEvent {
   type: 'mcp_end'
   server: string
+}
+
+export interface StateChangedEvent {
+  type: 'state_changed'
+  runId: string
+  revision: number
+  changedKeys: string[]
+  reason: string
+  state: SerializableAgentState
 }
 
 export interface TurnStartEvent {

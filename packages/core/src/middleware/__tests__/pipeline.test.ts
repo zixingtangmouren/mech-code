@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MiddlewarePipeline } from '../pipeline.js'
 import { createMiddleware } from '../types.js'
-import type { AgentMiddleware, RunContext } from '../types.js'
+import type { AgentMiddleware, ModelCallRequest, RunContext, ToolCallRequest } from '../types.js'
 import type { Tool, ToolOutput } from '../../tools/types.js'
 import type { AgentState } from '../../agent/state.js'
-import type { LLMProvider } from '../../provider/types.js'
+import type { LLMProvider, StreamResult } from '../../provider/types.js'
 
 // === 辅助工厂 ===
 
@@ -28,18 +28,27 @@ function createMockRunContext(overrides?: Partial<RunContext>): RunContext {
   const state: AgentState = {
     messages: [],
     usage: { inputTokens: 0, outputTokens: 0 },
-    store: {},
   }
   return {
     state,
-    callMessages: [],
-    system: '',
-    tools: [],
-    lastResponse: undefined,
     props: Object.freeze({}),
-    turnIndex: 0,
-    provider: createMockProvider(),
-    signal: new AbortController().signal,
+    runtime: {
+      runId: 'run-test',
+      provider: createMockProvider(),
+      system: '',
+      tools: [],
+      middleware: [],
+      signal: new AbortController().signal,
+      emit: vi.fn(),
+      notifyStateChanged: vi.fn(),
+    },
+    loopState: {
+      turnIndex: 0,
+      stopReason: 'end_turn',
+      lastResponse: undefined,
+      pendingToolCalls: [],
+      stateRevision: 0,
+    },
     ...overrides,
   }
 }
@@ -104,13 +113,13 @@ describe('MiddlewarePipeline', () => {
       }).toThrow()
     })
 
-    it('wrapToolCall 可读取 ctx.props', async () => {
+    it('wrapToolCall 可读取 request.context.props', async () => {
       const receivedProps: unknown[] = []
       const mw: AgentMiddleware = {
         name: 'wrap-props-reader',
-        async wrapToolCall(next, ctx) {
-          receivedProps.push(ctx.props)
-          return next(ctx)
+        async wrapToolCall(request, handler) {
+          receivedProps.push(request.context.props)
+          return handler(request)
         },
       }
 
@@ -119,14 +128,14 @@ describe('MiddlewarePipeline', () => {
       const baseFn = vi.fn(async (): Promise<ToolOutput> => ({ content: 'ok' }))
       const chain = pipeline.buildToolCallChain(baseFn)
 
-      const ctx = {
-        ...createMockRunContext({ props }),
+      const request = {
+        context: createMockRunContext({ props }),
         toolCallId: 'tc-1',
         toolName: 'test',
         toolInput: {},
       }
 
-      await chain(ctx)
+      await chain(request)
 
       expect(receivedProps[0]).toBe(props)
       expect(baseFn).toHaveBeenCalled()
@@ -167,6 +176,76 @@ describe('MiddlewarePipeline', () => {
       await expect(pipeline.runAfterAgent(createMockRunContext())).resolves.toBeUndefined()
     })
   })
+
+  describe('wrap 调用链', () => {
+    it('wrapToolCall 可改写真正传给 handler 的工具入参', async () => {
+      const mw: AgentMiddleware = {
+        name: 'rewrite-tool-input',
+        wrapToolCall(request, handler) {
+          return handler({
+            ...request,
+            toolInput: {
+              ...request.toolInput,
+              value: 'rewritten',
+            },
+          })
+        },
+      }
+      const baseFn = vi.fn(
+        async (_request: ToolCallRequest): Promise<ToolOutput> => ({
+          content: 'ok',
+        }),
+      )
+      const chain = new MiddlewarePipeline([mw]).buildToolCallChain(baseFn)
+
+      await chain({
+        context: createMockRunContext(),
+        toolCallId: 'tc-1',
+        toolName: 'test',
+        toolInput: { value: 'original' },
+      })
+
+      expect(baseFn.mock.calls[0]?.[0].toolInput).toEqual({ value: 'rewritten' })
+    })
+
+    it('wrapModelCall 可改写真正传给 handler 的 provider 参数', async () => {
+      const streamResult: StreamResult = {
+        stream: (async function* () {})(),
+        final: Promise.resolve({
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { inputTokens: 0, outputTokens: 0 },
+          stopReason: 'end_turn',
+        }),
+        abort: vi.fn(),
+      }
+      const mw: AgentMiddleware = {
+        name: 'append-system',
+        wrapModelCall(request, handler) {
+          return handler({
+            ...request,
+            params: {
+              ...request.params,
+              system: `${request.params.system ?? ''}\nextra`.trim(),
+            },
+          })
+        },
+      }
+      const baseFn = vi.fn(
+        async (_request: ModelCallRequest): Promise<StreamResult> => streamResult,
+      )
+      const context = createMockRunContext()
+      const chain = new MiddlewarePipeline([mw]).buildModelCallChain(baseFn)
+
+      await chain({
+        context,
+        provider: context.runtime.provider,
+        params: { messages: [], system: 'base' },
+        options: { signal: context.runtime.signal },
+      })
+
+      expect(baseFn.mock.calls[0]?.[0].params.system).toBe('base\nextra')
+    })
+  })
 })
 
 describe('createMiddleware', () => {
@@ -174,56 +253,54 @@ describe('createMiddleware', () => {
     const mw = createMiddleware({
       name: 'test-mw',
       beforeModel(ctx) {
-        ctx.system += ' appended'
+        ctx.runtime.system += ' appended'
       },
     })
 
     expect(mw.name).toBe('test-mw')
     expect(typeof mw.beforeModel).toBe('function')
-    expect(mw.store).toBeUndefined()
+    expect(mw.state).toBeUndefined()
   })
 
-  it('store 被深克隆，修改原始对象不影响中间件实例', () => {
-    const originalStore = { count: 0, nested: { value: 'hello' } }
+  it('state 被深克隆，修改原始对象不影响中间件实例', () => {
+    const originalState = { count: 0, nested: { value: 'hello' } }
     const mw = createMiddleware({
-      name: 'cloned-store',
-      store: originalStore,
+      name: 'cloned-state',
+      state: originalState,
     })
 
-    // 修改原始对象
-    originalStore.count = 99
-    originalStore.nested.value = 'modified'
+    originalState.count = 99
+    originalState.nested.value = 'modified'
 
-    // 中间件实例不受影响
-    expect(mw.store!.count).toBe(0)
-    expect((mw.store!.nested as { value: string }).value).toBe('hello')
+    expect(mw.state!.count).toBe(0)
+    expect((mw.state!.nested as { value: string }).value).toBe('hello')
   })
 
-  it('多次调用返回独立的 store 实例', () => {
+  it('多次调用返回独立的 state 实例', () => {
     function makeCounter() {
       return createMiddleware({
         name: 'counter',
-        store: { count: 0 },
+        state: { count: 0 },
       })
     }
 
     const mw1 = makeCounter()
     const mw2 = makeCounter()
 
-    mw1.store!.count = 5
-    expect(mw2.store!.count).toBe(0)
+    mw1.state!.count = 5
+    expect(mw2.state!.count).toBe(0)
   })
 
-  it('无 store 时 store 为 undefined', () => {
+  it('无 state 时 state 为 undefined', () => {
     const mw = createMiddleware({ name: 'stateless' })
-    expect(mw.store).toBeUndefined()
+    expect(mw.state).toBeUndefined()
   })
 
   it('hooks 正常绑定和执行', async () => {
     const calls: string[] = []
     const mw = createMiddleware({
       name: 'hooks-test',
-      store: { initialized: false },
+      state: { initialized: false },
       beforeAgent(_ctx) {
         calls.push('beforeAgent')
       },
@@ -250,16 +327,5 @@ describe('createMiddleware', () => {
 
     expect(mw.tools).toHaveLength(1)
     expect(mw.tools?.[0]?.name).toBe('my-tool')
-  })
-
-  it('propsSchema 字段正确透传', () => {
-    const mw = createMiddleware({
-      name: 'with-schema',
-      propsSchema: {
-        userId: { description: '用户 ID', required: true },
-      },
-    })
-
-    expect(mw.propsSchema?.userId?.required).toBe(true)
   })
 })

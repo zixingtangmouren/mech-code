@@ -60,12 +60,12 @@ function createToolAuthMiddleware(tools: Tool[], rl: readline.Interface) {
   return createMiddleware({
     name: 'tool-auth',
 
-    async wrapToolCall(next, ctx) {
-      const isReadonly = readonlyMap.get(ctx.toolName) ?? true
+    async wrapToolCall(request, handler) {
+      const isReadonly = readonlyMap.get(request.toolName) ?? true
 
       // 只读工具直接放行
       if (isReadonly) {
-        return next(ctx)
+        return handler(request)
       }
 
       // 写入工具：展示鉴权确认框（参数已由 tool_executing 事件渲染，此处不重复）
@@ -73,7 +73,7 @@ function createToolAuthMiddleware(tools: Tool[], rl: readline.Interface) {
       process.stdout.write(`  ${border}\n`)
       process.stdout.write(
         `  ${c.bgYellow}${c.black} ⚠ 需要授权 ${c.reset}` +
-          ` ${c.bold}${ctx.toolName}${c.reset} 将执行写入操作\n`,
+          ` ${c.bold}${request.toolName}${c.reset} 将执行写入操作\n`,
       )
       process.stdout.write(`  ${border}\n`)
 
@@ -89,12 +89,12 @@ function createToolAuthMiddleware(tools: Tool[], rl: readline.Interface) {
 
       if (confirmed) {
         process.stdout.write(`  ${c.green}✓ 已授权${c.reset}\n`)
-        return next(ctx)
+        return handler(request)
       }
 
       process.stdout.write(`  ${c.red}✗ 已拒绝，操作已取消${c.reset}\n`)
       return {
-        content: `用户拒绝了对工具 "${ctx.toolName}" 的调用，操作已取消。`,
+        content: `用户拒绝了对工具 "${request.toolName}" 的调用，操作已取消。`,
         isError: true,
       }
     },

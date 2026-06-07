@@ -11,8 +11,9 @@ export function registerChatCommand(program: Command): void {
       const React = await import('react')
       const { App } = await import('../ui/App.js')
       const { loadConfig, createProviderFromConfig } = await import('../config/loader.js')
+      const { resolveContextManagementConfig } = await import('../config/schema.js')
       const { createAgent } = await import('@mech-code/core')
-      const { todoMiddleware } = await import('@mech-code/middleware')
+      const { contextManagementMiddleware, todoMiddleware } = await import('@mech-code/middleware')
       const { getBuiltinTools } = await import('@mech-code/tools')
       const { buildSystemPrompt } = await import('../prompts/system.js')
 
@@ -39,13 +40,47 @@ export function registerChatCommand(program: Command): void {
       const cwd = process.cwd()
       const tools = getBuiltinTools()
       const system = config.system ?? buildSystemPrompt(cwd)
+      const middleware = [todoMiddleware()]
+      const createConfiguredProvider = (name: string) => {
+        if (!config.providers?.[name]) {
+          console.error(
+            `错误: contextManagement 引用了不存在的 provider "${name}"。\n` +
+              `可用 providers: ${Object.keys(config.providers ?? {}).join(', ') || '(无)'}`,
+          )
+          process.exit(1)
+        }
+        return createProviderFromConfig(name, config.providers[name]!)
+      }
+      const contextManagement = resolveContextManagementConfig(config)
+      if (contextManagement) {
+        const contextProvider = contextManagement.provider
+          ? createConfiguredProvider(contextManagement.provider)
+          : undefined
+        const summaryProvider = contextManagement.summaryProvider
+          ? createConfiguredProvider(contextManagement.summaryProvider)
+          : undefined
+
+        middleware.push(
+          contextManagementMiddleware({
+            provider: contextProvider,
+            summaryProvider,
+            modelContextWindow: contextManagement.modelContextWindow,
+            reservedOutputTokens: contextManagement.reservedOutputTokens,
+            trigger: contextManagement.trigger,
+            keep: contextManagement.keep,
+            summary: contextManagement.summary,
+            toolResults: contextManagement.toolResults,
+            cleanup: contextManagement.cleanup,
+            reactiveCompact: contextManagement.reactiveCompact,
+          }),
+        )
+      }
 
       const agent = createAgent({
         provider,
         tools,
-        middleware: [todoMiddleware()],
+        middleware,
         system,
-        cwd,
         maxTurns: 20,
       })
 

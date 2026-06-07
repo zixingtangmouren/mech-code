@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAgent, createAgentState, createMiddleware } from '@mech-code/core'
+import { UserMessage, createAgent, createAgentState, createMiddleware } from '@mech-code/core'
 import type {
-  AgentMessage,
+  AgentState,
   CallOptions,
   ChatParams,
   ChatResponse,
@@ -53,7 +53,7 @@ describe('todoMiddleware', () => {
       // consume stream
     }
 
-    expect(readTodoState(state.store)).toMatchObject({ items: [] })
+    expect(readTodoState(state)).toMatchObject({ items: [] })
     expect(provider.streamMock).toHaveBeenCalled()
     expect(provider.streamCalls[0]?.tools?.some((tool) => tool.name === 'write_todos')).toBe(true)
   })
@@ -93,7 +93,7 @@ describe('todoMiddleware', () => {
       // consume stream
     }
 
-    const todos = readTodoState(state.store)
+    const todos = readTodoState(state)
     expect(todos.items).toHaveLength(2)
     expect(todos.items[1]).toEqual({ content: 'Implement middleware', status: 'in_progress' })
     expect(todos.lastWriteTurn).toBe(0)
@@ -120,7 +120,7 @@ describe('todoMiddleware', () => {
       },
     ])
     const state = createAgentState()
-    state.store.todos = {
+    state[TODO_STORE_KEY] = {
       items: [{ content: 'Previous', status: 'in_progress' }],
       lastWriteTurn: 0,
       lastReminderTurn: 0,
@@ -133,7 +133,7 @@ describe('todoMiddleware', () => {
       // consume stream
     }
 
-    const todos = readTodoState(state.store)
+    const todos = readTodoState(state)
     expect(todos.items).toEqual([])
     expect(todos.lastWriteTurn).toBeUndefined()
     expect(todos.lastReminderTurn).toBeUndefined()
@@ -180,11 +180,11 @@ describe('todoMiddleware', () => {
         getMessageText(message.content).includes('called multiple times'),
       ),
     ).toBe(true)
-    expect(readTodoState(state.store).items).toEqual([])
+    expect(readTodoState(state).items).toEqual([])
   })
 
   it('injects reminder as an agent user message before the latest user message when both thresholds are met', async () => {
-    const observedCallMessages: AgentMessage[][] = []
+    const observedMessages: AgentState['messages'][] = []
     const provider = createProvider([
       {
         content: [{ type: 'text', text: 'ok' }],
@@ -193,8 +193,8 @@ describe('todoMiddleware', () => {
       },
     ])
     const state = createAgentState()
-    state.messages.push({ role: 'user', content: 'continue' })
-    state.store.todos = {
+    state.messages.push(new UserMessage('continue'))
+    state[TODO_STORE_KEY] = {
       items: [{ content: 'Finish work', status: 'pending' }],
       lastWriteTurn: 0,
       lastReminderTurn: 0,
@@ -205,9 +205,9 @@ describe('todoMiddleware', () => {
       middleware: [
         todoMiddleware({ turnsBetweenReminders: 2, turnsSinceWrite: 3 }),
         createMiddleware({
-          name: 'observe-call-messages',
+          name: 'observe-messages',
           beforeModel(ctx) {
-            observedCallMessages.push(structuredClone(ctx.callMessages))
+            observedMessages.push(structuredClone(ctx.state.messages))
           },
         }),
       ],
@@ -219,27 +219,33 @@ describe('todoMiddleware', () => {
 
     expect(provider.streamMock).toHaveBeenCalled()
     expect(provider.streamCalls[0]?.system).not.toContain('Todo reminder:')
-    expect(observedCallMessages[0]).toHaveLength(2)
-    const injectedMessage = observedCallMessages[0]?.[0]
+    expect(observedMessages[0]).toHaveLength(2)
+    const injectedMessage = observedMessages[0]?.[0]
     expect(injectedMessage?.role).toBe('user')
     expect(getMessageText(injectedMessage?.content)).toContain('Todo reminder:')
-    expect(injectedMessage?._meta).toEqual({
+    expect(injectedMessage?.metadata).toEqual({
       source: 'agent',
       injected: true,
       kind: 'todo_reminder',
     })
-    expect(observedCallMessages[0]?.[1]).toMatchObject({ role: 'user', content: 'continue' })
+    expect(observedMessages[0]?.[1]).toMatchObject({ role: 'user', content: 'continue' })
     expect(provider.streamCalls[0]?.messages).toHaveLength(2)
     const providerReminderMessage = provider.streamCalls[0]?.messages[0]
     expect(providerReminderMessage?.role).toBe('user')
     expect(getMessageText(providerReminderMessage?.content)).toContain('Todo reminder:')
-    expect(providerReminderMessage).not.toHaveProperty('_meta')
+    expect(providerReminderMessage).not.toHaveProperty('metadata')
     expect(provider.streamCalls[0]?.messages[1]).toMatchObject({
       role: 'user',
       content: [{ type: 'text', text: 'continue' }],
     })
-    expect(state.messages).toHaveLength(1)
-    expect(readTodoState(state.store).lastReminderTurn).toBe(3)
+    expect(state.messages).toHaveLength(3)
+    expect(state.messages[0]).toMatchObject({
+      role: 'user',
+      metadata: { source: 'agent', injected: true, kind: 'todo_reminder' },
+    })
+    expect(state.messages[1]).toMatchObject({ role: 'user', content: 'continue' })
+    expect(state.messages[2]).toMatchObject({ role: 'assistant' })
+    expect(readTodoState(state).lastReminderTurn).toBe(3)
   })
 
   it('does not inject reminder until both reminder thresholds are met', async () => {
@@ -251,8 +257,8 @@ describe('todoMiddleware', () => {
       },
     ])
     const state = createAgentState()
-    state.messages.push({ role: 'user', content: 'continue' })
-    state.store.todos = {
+    state.messages.push(new UserMessage('continue'))
+    state[TODO_STORE_KEY] = {
       items: [{ content: 'Finish work', status: 'pending' }],
       lastWriteTurn: 0,
       lastReminderTurn: 2,
@@ -270,12 +276,12 @@ describe('todoMiddleware', () => {
     expect(provider.streamMock).toHaveBeenCalled()
     expect(provider.streamCalls[0]?.system).not.toContain('Todo reminder:')
     expect(provider.streamCalls[0]?.messages).toHaveLength(1)
-    expect(readTodoState(state.store).lastReminderTurn).toBe(2)
+    expect(readTodoState(state).lastReminderTurn).toBe(2)
   })
 })
 
-function readTodoState(store: Record<string, unknown>): TodoState {
-  return store[TODO_STORE_KEY] as TodoState
+function readTodoState(state: AgentState): TodoState {
+  return state[TODO_STORE_KEY] as TodoState
 }
 
 function getMessageText(content: unknown): string {

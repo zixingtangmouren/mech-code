@@ -1,7 +1,7 @@
 // Agent 模块
 export { Agent, createAgent } from './agent/agent.js'
 export type { AgentConfig } from './agent/agent.js'
-export type { RunParams, RunResult } from './agent/types.js'
+export type { RunConfig, RunParams, RunResult } from './agent/types.js'
 export type { AgentState, AgentMessage } from './agent/state.js'
 export { createAgentState } from './agent/state.js'
 
@@ -26,6 +26,11 @@ export type {
 } from './provider/types.js'
 export { ProviderError, httpStatusToCode } from './provider/errors.js'
 export type { ProviderErrorCode } from './provider/errors.js'
+export { retryStreamResult } from './provider/stream-result.js'
+export type {
+  StreamResultRetryContext,
+  StreamResultRetryHandler,
+} from './provider/stream-result.js'
 export { AnthropicProvider } from './provider/anthropic/provider.js'
 export { OpenAIProvider } from './provider/openai/provider.js'
 export { OpenAICompatibleProvider } from './provider/openai-compatible/provider.js'
@@ -41,6 +46,16 @@ export {
 export { MessageAccumulator } from './message/accumulator.js'
 export { buildChatParams } from './message/builder.js'
 export {
+  AssistantMessage,
+  BaseMessage,
+  SystemMessage,
+  ToolMessage,
+  UserMessage,
+  deserializeAgentMessage,
+  serializeAgentMessage,
+} from './message/message.js'
+export type { MessageMetadata, MessageOptions, SerializedAgentMessage } from './message/message.js'
+export {
   estimateTokens,
   estimateMessageTokens,
   estimateMessagesTokens,
@@ -51,10 +66,13 @@ export type {
   AgentMiddleware,
   RunContext,
   ToolCallContext,
-  ModelCallFn,
-  ToolCallFn,
+  ModelCallRequest,
+  ToolCallRequest,
+  AgentRuntime,
+  AgentLoopState,
+  ModelCallHandler,
+  ToolCallHandler,
   Awaitable,
-  PropDescriptor,
   MiddlewareInit,
 } from './middleware/types.js'
 export { Middleware, createMiddleware } from './middleware/types.js'

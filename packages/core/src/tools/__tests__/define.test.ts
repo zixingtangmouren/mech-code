@@ -6,9 +6,43 @@ import type { ToolRunContext } from '../types.js'
 
 // 测试用的最小执行上下文
 const mockCtx: ToolRunContext = {
-  cwd: '/tmp',
-  signal: new AbortController().signal,
-  store: {},
+  state: { messages: [], usage: { inputTokens: 0, outputTokens: 0 } },
+  props: Object.freeze({ cwd: '/tmp' }),
+  runtime: {
+    runId: 'run-test',
+    provider: {
+      name: 'mock',
+      chat: async () => ({
+        content: [],
+        usage: { inputTokens: 0, outputTokens: 0 },
+        stopReason: 'end_turn',
+      }),
+      stream: () => ({
+        stream: (async function* () {})(),
+        final: Promise.resolve({
+          content: [],
+          usage: { inputTokens: 0, outputTokens: 0 },
+          stopReason: 'end_turn',
+        }),
+        abort() {},
+      }),
+    },
+    system: '',
+    tools: [],
+    middleware: [],
+    signal: new AbortController().signal,
+    emit() {},
+    notifyStateChanged() {},
+  },
+  loopState: {
+    turnIndex: 0,
+    stopReason: 'end_turn',
+    pendingToolCalls: [],
+    stateRevision: 0,
+  },
+  toolCallId: 'tool-call-test',
+  toolName: 'test_tool',
+  toolInput: {},
 }
 
 describe('defineTool', () => {

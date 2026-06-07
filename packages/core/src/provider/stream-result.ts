@@ -2,6 +2,16 @@ import type { AgentEvent } from '@mech-code/shared'
 import type { ChatResponse, StreamResult, StreamNormalizer } from './types.js'
 import { MessageAccumulator } from '../message/accumulator.js'
 
+export interface StreamResultRetryContext {
+  error: unknown
+  attempt: number
+  emittedEvents: number
+}
+
+export type StreamResultRetryHandler = (
+  context: StreamResultRetryContext,
+) => Promise<StreamResult | null> | StreamResult | null
+
 /**
  * createStreamResult — 将厂商原始 chunk 流包装为 StreamResult 双通道。
  *
@@ -61,6 +71,68 @@ export function createStreamResult<TVendorChunk>(options: {
     final,
     abort() {
       controller.abort()
+    },
+  }
+}
+
+/**
+ * 包装 StreamResult，使调用方可以在流式错误出现时返回一个新的 StreamResult 重试。
+ *
+ * 该 helper 不理解具体错误语义；中间件自行决定是否重试。为避免 UI 看到半段旧输出
+ * 又接上重试输出，只要当前尝试已经向外 yield 过事件，后续错误就不再重试。
+ */
+export function retryStreamResult(
+  initial: StreamResult,
+  onError: StreamResultRetryHandler,
+): StreamResult {
+  let current = initial
+  let emittedEvents = 0
+  let resolveFinal!: (response: ChatResponse) => void
+  let rejectFinal!: (error: unknown) => void
+
+  const final = new Promise<ChatResponse>((resolve, reject) => {
+    resolveFinal = resolve
+    rejectFinal = reject
+  })
+
+  async function* generateStream(): AsyncIterable<AgentEvent> {
+    let attempt = 0
+
+    while (true) {
+      const emittedBeforeAttempt = emittedEvents
+      try {
+        for await (const event of current.stream) {
+          emittedEvents++
+          yield event
+        }
+
+        const response = await current.final
+        resolveFinal(response)
+        return
+      } catch (error) {
+        const hasEmittedThisAttempt = emittedEvents > emittedBeforeAttempt
+        if (hasEmittedThisAttempt) {
+          rejectFinal(error)
+          throw error
+        }
+
+        const next = await onError({ error, attempt, emittedEvents })
+        if (!next) {
+          rejectFinal(error)
+          throw error
+        }
+
+        current = next
+        attempt++
+      }
+    }
+  }
+
+  return {
+    stream: generateStream(),
+    final,
+    abort() {
+      current.abort()
     },
   }
 }

@@ -1,8 +1,8 @@
 import type {
   AgentMiddleware,
   RunContext,
-  ModelCallFn,
-  ToolCallFn,
+  ModelCallHandler,
+  ToolCallHandler,
   ToolCallContext,
 } from './types.js'
 import type { StreamResult } from '../provider/types.js'
@@ -75,10 +75,10 @@ export class MiddlewarePipeline {
    * 从后往前包裹，最先注册的中间件在最外层（先执行）。
    * beforeModel hooks 已在 wrap 链之前执行完毕，重试时不会重复触发。
    */
-  buildModelCallChain(baseFn: ModelCallFn): ModelCallFn {
-    return this.middlewares.reduceRight<ModelCallFn>((next, mw) => {
+  buildModelCallChain(baseFn: ModelCallHandler): ModelCallHandler {
+    return this.middlewares.reduceRight<ModelCallHandler>((next, mw) => {
       if (!mw.wrapModelCall) return next
-      return (ctx) => Promise.resolve(mw.wrapModelCall!(next, ctx))
+      return (request) => Promise.resolve(mw.wrapModelCall!(request, next))
     }, baseFn)
   }
 
@@ -86,10 +86,10 @@ export class MiddlewarePipeline {
    * 构建工具调用 Wrap 链。
    * 结构与模型调用链相同，从后往前包裹。
    */
-  buildToolCallChain(baseFn: ToolCallFn): ToolCallFn {
-    return this.middlewares.reduceRight<ToolCallFn>((next, mw) => {
+  buildToolCallChain(baseFn: ToolCallHandler): ToolCallHandler {
+    return this.middlewares.reduceRight<ToolCallHandler>((next, mw) => {
       if (!mw.wrapToolCall) return next
-      return (ctx) => Promise.resolve(mw.wrapToolCall!(next, ctx))
+      return (request) => Promise.resolve(mw.wrapToolCall!(request, next))
     }, baseFn)
   }
 }

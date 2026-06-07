@@ -12,7 +12,9 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "example": "tsx examples/basic-agent.ts"
+    "example": "tsx examples/basic-agent.ts",
+    "example:todo": "tsx examples/middleware-todo.ts",
+    "example:auth": "tsx examples/middleware-auth.ts"
   },
   "devDependencies": {
     "tsx": "^4.0.0"

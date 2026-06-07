@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createMiddleware, defineTool } from '@mech-code/core'
-import type { AgentMiddleware, RunContext } from '@mech-code/core'
+import { UserMessage, createMiddleware, defineTool } from '@mech-code/core'
+import type { AgentMiddleware, AgentState, RunContext } from '@mech-code/core'
 
 export const TODO_STORE_KEY = 'todos'
 const TODO_TOOL_NAME = 'write_todos'
@@ -289,7 +289,7 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
     schema: writeTodosSchema,
     flags: { readonly: false, parallelSafe: false },
     execute(input, context) {
-      const state = ensureTodoState(context.store)
+      const state = ensureTodoState(context.state)
       const submitted = input.todos.map((todo) => ({ ...todo }))
       const shouldClear =
         submitted.length === 0 || submitted.every((todo) => todo.status === 'completed')
@@ -316,15 +316,14 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
 
   return createMiddleware({
     name: 'todo',
-    store: { [TODO_STORE_KEY]: defaultTodoState },
+    state: { [TODO_STORE_KEY]: defaultTodoState },
     tools: [writeTodosTool],
     beforeAgent(ctx) {
-      ensureTodoState(ctx.state.store)
+      ensureTodoState(ctx.state)
     },
     beforeModel(ctx) {
-      const state = ensureTodoState(ctx.state.store)
+      const state = ensureTodoState(ctx.state)
       const currentTurn = state.turnCounter ?? 0
-      ctx.system = appendSystemSection(ctx.system, TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT)
 
       const reminder = buildReminder(ctx, resolved, currentTurn)
       if (reminder) {
@@ -332,23 +331,36 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
       }
       state.turnCounter = currentTurn + 1
     },
+    wrapModelCall(request, handler) {
+      return handler({
+        ...request,
+        params: {
+          ...request.params,
+          system: appendSystemSection(
+            request.params.system ?? '',
+            TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT,
+          ),
+        },
+      })
+    },
     afterModel(ctx) {
-      const state = ensureTodoState(ctx.state.store)
+      const state = ensureTodoState(ctx.state)
       const count = countToolCalls(ctx, TODO_TOOL_NAME)
       if (count > 0) {
         state.writeCallCountByTurn ??= {}
-        state.writeCallCountByTurn[ctx.turnIndex] = count
+        state.writeCallCountByTurn[ctx.loopState.turnIndex] = count
       }
     },
-    async wrapToolCall(next, ctx) {
-      if (ctx.toolName !== TODO_TOOL_NAME) {
-        return next(ctx)
+    async wrapToolCall(request, handler) {
+      if (request.toolName !== TODO_TOOL_NAME) {
+        return handler(request)
       }
 
-      const state = ensureTodoState(ctx.state.store)
+      const { context } = request
+      const state = ensureTodoState(context.state)
       const count =
-        state.writeCallCountByTurn?.[ctx.turnIndex] ??
-        countLatestAssistantToolCalls(ctx.state.messages, TODO_TOOL_NAME)
+        state.writeCallCountByTurn?.[context.loopState.turnIndex] ??
+        countLatestAssistantToolCalls(context.state.messages, TODO_TOOL_NAME)
       if (count > 1) {
         return {
           content:
@@ -358,21 +370,21 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
         }
       }
 
-      const output = await next(ctx)
+      const output = await handler(request)
       if (!output.isError && output.metadata?.cleared !== true) {
-        state.lastWriteTurn = getCurrentTodoTurn(state, ctx.turnIndex)
+        state.lastWriteTurn = getCurrentTodoTurn(state, context.loopState.turnIndex)
       }
       return output
     },
   })
 }
 
-function ensureTodoState(store: Record<string, unknown>): TodoState {
-  const existing = store[TODO_STORE_KEY]
+function ensureTodoState(state: AgentState): TodoState {
+  const existing = state[TODO_STORE_KEY]
   if (isTodoState(existing)) return existing
 
   const created = structuredClone(defaultTodoState)
-  store[TODO_STORE_KEY] = created
+  state[TODO_STORE_KEY] = created
   return created
 }
 
@@ -390,7 +402,7 @@ function isTodoState(value: unknown): value is TodoState {
 }
 
 function countToolCalls(ctx: RunContext, toolName: string): number {
-  const content = ctx.lastResponse?.content
+  const content = ctx.loopState.lastResponse?.content
   if (!Array.isArray(content)) return 0
   return content.filter((block) => block.type === 'tool_use' && block.name === toolName).length
 }
@@ -422,7 +434,7 @@ function buildReminder(
 ): string | null {
   if (options.turnsBetweenReminders === false || options.turnsSinceWrite === false) return null
 
-  const state = ensureTodoState(ctx.state.store)
+  const state = ensureTodoState(ctx.state)
   const unfinished = state.items.filter((todo) => todo.status !== 'completed')
   if (unfinished.length === 0) return null
 
@@ -446,27 +458,26 @@ function buildReminder(
 }
 
 function injectReminderMessage(ctx: RunContext, reminder: string): void {
-  const message = {
-    role: 'user' as const,
-    content: reminder,
-    _meta: {
+  const message = new UserMessage(reminder, {
+    metadata: {
       source: 'agent',
       injected: true,
       kind: 'todo_reminder',
     },
-  }
+  })
 
-  const lastUserIndex = findLastUserMessageIndex(ctx.callMessages)
+  const lastUserIndex = findLastUserMessageIndex(ctx.state.messages)
   if (lastUserIndex === -1) {
-    ctx.callMessages.push(message)
+    ctx.state.messages.push(message)
     return
   }
-  ctx.callMessages.splice(lastUserIndex, 0, message)
+  ctx.state.messages.splice(lastUserIndex, 0, message)
 }
 
-function findLastUserMessageIndex(messages: RunContext['callMessages']): number {
+function findLastUserMessageIndex(messages: RunContext['state']['messages']): number {
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index]?.role === 'user') return index
+    const message = messages[index]
+    if (message?.role === 'user' && message.metadata?.injected !== true) return index
   }
   return -1
 }

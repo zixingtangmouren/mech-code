@@ -14,8 +14,6 @@ export interface AgentConfig {
   middleware?: AgentMiddleware[]
   /** 最大循环轮数，防止无限循环，默认 20 */
   maxTurns?: number
-  /** 工具执行的工作目录，默认为空字符串 */
-  cwd?: string
 }
 
 export class Agent {
@@ -24,7 +22,6 @@ export class Agent {
   private readonly _system: string
   private _middleware: AgentMiddleware[]
   private readonly _maxTurns: number
-  private readonly _cwd: string
 
   constructor(config: AgentConfig) {
     this._provider = config.provider
@@ -32,13 +29,12 @@ export class Agent {
     this._system = config.system ?? ''
     this._middleware = config.middleware ? [...config.middleware] : []
     this._maxTurns = config.maxTurns ?? 20
-    this._cwd = config.cwd ?? ''
   }
 
   /**
    * 流式运行 Agent，逐事件 yield（适合实时 UI 渲染）。
    * state.messages 和 state.usage 在运行过程中直接被修改。
-   * run() 开始前会将各中间件的默认 store 合并并绑定到 AgentState.store。
+   * run() 开始前会将各中间件的默认 state 扩展合并到 AgentState 顶层。
    */
   async *run(params: RunParams): AsyncIterable<AgentEvent> {
     yield* runLoop(params, {
@@ -47,7 +43,6 @@ export class Agent {
       system: this._system,
       middleware: this._middleware,
       maxTurns: this._maxTurns,
-      cwd: this._cwd,
     })
   }
 
@@ -60,8 +55,7 @@ export class Agent {
       tools: this._tools,
       system: this._system,
       middleware: this._middleware,
-      maxTurns: params.maxTurns ?? this._maxTurns,
-      cwd: this._cwd,
+      maxTurns: this._maxTurns,
     })
   }
 
@@ -123,7 +117,6 @@ export class Agent {
       system: overrides.system ?? this._system,
       middleware: overrides.middleware ?? [...this._middleware],
       maxTurns: overrides.maxTurns ?? this._maxTurns,
-      cwd: overrides.cwd ?? this._cwd,
     })
   }
 }

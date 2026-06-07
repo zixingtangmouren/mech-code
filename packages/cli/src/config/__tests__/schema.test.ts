@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolveProviderConfig } from '../schema.js'
+import { resolveContextManagementConfig, resolveProviderConfig } from '../schema.js'
 
 describe('resolveProviderConfig', () => {
   it('passes protocol and default params through to provider config', () => {
@@ -30,5 +30,31 @@ describe('resolveProviderConfig', () => {
     })
 
     vi.unstubAllEnvs()
+  })
+})
+
+describe('resolveContextManagementConfig', () => {
+  it('enables context management when the config block exists', () => {
+    expect(
+      resolveContextManagementConfig({
+        contextManagement: {
+          summaryProvider: 'summary',
+          trigger: { messages: 10 },
+          keep: { messages: 4 },
+        },
+      }),
+    ).toEqual({
+      summaryProvider: 'summary',
+      trigger: { messages: 10 },
+      keep: { messages: 4 },
+    })
+  })
+
+  it('returns undefined when context management is explicitly disabled', () => {
+    expect(
+      resolveContextManagementConfig({
+        contextManagement: { enabled: false, trigger: { messages: 10 } },
+      }),
+    ).toBeUndefined()
   })
 })

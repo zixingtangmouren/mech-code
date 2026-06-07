@@ -1,15 +1,33 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { AgentEvent } from '@mech-code/shared'
 import { createAgent } from '../agent.js'
 import { createAgentState } from '../state.js'
 import { createMiddleware } from '../../middleware/types.js'
-import type { LLMProvider } from '../../provider/types.js'
+import type { ChatParams, CallOptions, LLMProvider, StreamResult } from '../../provider/types.js'
+
+interface MockProvider extends LLMProvider {
+  streamMock: ReturnType<typeof vi.fn<(params: ChatParams, options?: CallOptions) => StreamResult>>
+}
 
 /** 构造一个最简 mock LLMProvider，不会发起真实请求 */
-function createMockProvider(): LLMProvider {
+function createMockProvider(): MockProvider {
+  const streamMock = vi.fn(
+    (_params: ChatParams, _options?: CallOptions): StreamResult => ({
+      stream: (async function* () {})(),
+      final: Promise.resolve({
+        content: [{ type: 'text' as const, text: 'ok' }],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: 'end_turn',
+      }),
+      abort: vi.fn(),
+    }),
+  )
+
   return {
     name: 'mock',
     chat: vi.fn(),
-    stream: vi.fn(),
+    stream: streamMock,
+    streamMock,
   }
 }
 
@@ -46,58 +64,38 @@ describe('createAgent', () => {
     expect(true).toBe(true)
   })
 
-  it('middleware 默认 store 会合并并绑定到 AgentState.store', async () => {
+  it('middleware 默认 state 会合并到 AgentState 顶层且不覆盖调用方字段', async () => {
     const provider = createMockProvider()
-    provider.stream = vi.fn(() => ({
-      stream: (async function* () {})(),
-      final: Promise.resolve({
-        content: [{ type: 'text' as const, text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn' as const,
-      }),
-      abort: vi.fn(),
-    }))
-
     const mw = createMiddleware({
       name: 'counter',
-      store: { count: 0, existing: 'default' },
+      state: { count: 0, existing: 'default' },
       beforeAgent(ctx) {
-        this.store!.count = (this.store!.count as number) + 1
-        ctx.state.store['fromCtx'] = true
+        ctx.state.count = (ctx.state.count as number) + 1
+        ctx.state.fromCtx = true
       },
     })
     const state = createAgentState()
-    state.store['existing'] = 'runtime'
+    state.existing = 'runtime'
 
     const agent = createAgent({ provider, middleware: [mw] })
     for await (const _event of agent.run({ state })) {
       // consume stream
     }
 
-    expect(mw.store).toBe(state.store)
-    expect(state.store['count']).toBe(1)
-    expect(state.store['fromCtx']).toBe(true)
-    expect(state.store['existing']).toBe('runtime')
+    expect(state.count).toBe(1)
+    expect(state.fromCtx).toBe(true)
+    expect(state.existing).toBe('runtime')
+    expect(mw.state).toEqual({ count: 0, existing: 'default' })
   })
 
-  it('同一 middleware 绑定新 AgentState 时不会泄漏上一轮运行时 store', async () => {
+  it('同一 middleware 多次运行不会泄漏上一轮顶层扩展 state', async () => {
     const provider = createMockProvider()
-    provider.stream = vi.fn(() => ({
-      stream: (async function* () {})(),
-      final: Promise.resolve({
-        content: [{ type: 'text' as const, text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn' as const,
-      }),
-      abort: vi.fn(),
-    }))
-
     const mw = createMiddleware({
-      name: 'session-store',
-      store: { count: 0 },
+      name: 'session-state',
+      state: { count: 0 },
       beforeAgent(ctx) {
-        this.store!.count = (this.store!.count as number) + 1
-        ctx.state.store['runtimeOnly'] = true
+        ctx.state.count = (ctx.state.count as number) + 1
+        ctx.state.runtimeOnly = true
       },
     })
     const agent = createAgent({ provider, middleware: [mw] })
@@ -112,10 +110,103 @@ describe('createAgent', () => {
       // consume stream
     }
 
-    expect(first.store['count']).toBe(1)
-    expect(first.store['runtimeOnly']).toBe(true)
-    expect(second.store['count']).toBe(1)
-    expect(second.store['runtimeOnly']).toBe(true)
-    expect(Object.keys(second.store)).toEqual(['count', 'runtimeOnly'])
+    expect(first.count).toBe(1)
+    expect(first.runtimeOnly).toBe(true)
+    expect(second.count).toBe(1)
+    expect(second.runtimeOnly).toBe(true)
+    expect(Object.keys(second).sort()).toEqual(['count', 'messages', 'runtimeOnly', 'usage'])
+  })
+
+  it('run config.maxTurns 覆盖 Agent 默认最大轮次', async () => {
+    const provider = createMockProvider()
+    provider.streamMock.mockImplementation(() => ({
+      stream: (async function* () {})(),
+      final: Promise.resolve({
+        content: [
+          {
+            type: 'tool_use' as const,
+            id: 'tool-1',
+            name: 'missing_tool',
+            input: {},
+          },
+        ],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: 'tool_use',
+      }),
+      abort: vi.fn(),
+    }))
+    const state = createAgentState()
+    const agent = createAgent({ provider, maxTurns: 10 })
+    const events: AgentEvent[] = []
+
+    for await (const event of agent.run({ state, config: { maxTurns: 1 } })) {
+      events.push(event)
+    }
+
+    expect(provider.streamMock).toHaveBeenCalledTimes(1)
+    expect(events.find((event) => event.type === 'agent_run_end')).toMatchObject({
+      type: 'agent_run_end',
+      stopReason: 'max_turns',
+    })
+  })
+
+  it('run config.signal 可在运行开始前中止本次 run', async () => {
+    const provider = createMockProvider()
+    const state = createAgentState()
+    const agent = createAgent({ provider })
+    const controller = new AbortController()
+    controller.abort('test_abort')
+    const events: AgentEvent[] = []
+
+    for await (const event of agent.run({ state, config: { signal: controller.signal } })) {
+      events.push(event)
+    }
+
+    expect(provider.streamMock).not.toHaveBeenCalled()
+    expect(events.find((event) => event.type === 'agent_run_end')).toMatchObject({
+      type: 'agent_run_end',
+      stopReason: 'abort',
+    })
+  })
+
+  it('state_changed 会报告顶层和嵌套 state 变更并递增 revision', async () => {
+    const provider = createMockProvider()
+    const state = createAgentState()
+    const agent = createAgent({
+      provider,
+      middleware: [
+        createMiddleware({
+          name: 'state-writer',
+          state: { counter: { value: 0 } },
+          beforeModel(ctx) {
+            const counter = ctx.state.counter as { value: number }
+            counter.value += 1
+            ctx.runtime.notifyStateChanged('counter_increment', ['counter'])
+          },
+        }),
+      ],
+    })
+    const events: AgentEvent[] = []
+
+    for await (const event of agent.run({ state })) {
+      events.push(event)
+    }
+
+    const stateEvents = events.filter(
+      (event): event is Extract<AgentEvent, { type: 'state_changed' }> =>
+        event.type === 'state_changed',
+    )
+    expect(stateEvents.length).toBeGreaterThanOrEqual(2)
+    expect(stateEvents[0]).toMatchObject({
+      type: 'state_changed',
+      revision: 1,
+      changedKeys: ['counter'],
+      reason: 'counter_increment',
+    })
+    expect(stateEvents.some((event) => event.changedKeys.includes('messages'))).toBe(true)
+    expect(stateEvents.some((event) => event.changedKeys.includes('usage'))).toBe(true)
+    expect(stateEvents.map((event) => event.revision)).toEqual(
+      stateEvents.map((_event, index) => index + 1),
+    )
   })
 })
