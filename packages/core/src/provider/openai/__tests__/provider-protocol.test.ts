@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenAIProvider } from '../provider.js'
 import { OpenAICompatibleProvider } from '../../openai-compatible/provider.js'
+import { UserMessage } from '../../../message/message.js'
 
 describe('OpenAIProvider protocol selection', () => {
   afterEach(() => {
@@ -19,12 +20,13 @@ describe('OpenAIProvider protocol selection', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const provider = new OpenAIProvider({ apiKey: 'test', model: 'gpt-4o-mini' })
-    await provider.chat({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
+    await provider.chat({ messages: [new UserMessage('hi', { metadata: { hidden: true } })] })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('https://api.openai.com/v1/chat/completions')
     expect(init.method).toBe('POST')
     expect(init.body).toContain('"messages"')
+    expect(init.body).not.toContain('hidden')
   })
 
   it('uses Responses endpoint when protocol is responses', async () => {
@@ -44,7 +46,7 @@ describe('OpenAIProvider protocol selection', () => {
       protocol: 'responses',
     })
     const response = await provider.chat({
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      messages: [new UserMessage('hi')],
     })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
@@ -71,7 +73,7 @@ describe('OpenAIProvider protocol selection', () => {
       baseUrl: 'https://example.test',
       protocol: 'responses',
     })
-    await provider.chat({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
+    await provider.chat({ messages: [new UserMessage('hi')] })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('https://example.test/v1/responses')

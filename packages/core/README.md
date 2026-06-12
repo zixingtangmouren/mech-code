@@ -17,7 +17,13 @@ pnpm add @mech-code/core
 ## Quick Start
 
 ```ts
-import { createAgent, AnthropicProvider, defineTool } from '@mech-code/core'
+import {
+  AnthropicProvider,
+  UserMessage,
+  createAgent,
+  createAgentState,
+  defineTool,
+} from '@mech-code/core'
 import { z } from 'zod'
 
 // 1. Define a tool
@@ -47,7 +53,7 @@ const agent = createAgent({
 
 // 4. Create a state object (owned by the caller, persists across turns)
 const state = createAgentState()
-state.messages.push({ role: 'user', content: 'Hello!' })
+state.messages.push(new UserMessage('Hello!'))
 
 // 5. Stream events
 for await (const event of agent.run({ state })) {
@@ -363,42 +369,27 @@ agent.use(myMiddleware)
 
 ## Message Protocol
 
-### External message format (SDK surface)
+### Agent message format
 
 ```ts
-type Message =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string | UserContentBlock[] } // multimodal
-  | { role: 'assistant'; content: string | AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ```
 
 ### Multimodal input
 
 ```ts
-const messages: Message[] = [
-  {
-    role: 'user',
-    content: [
-      { type: 'text', text: 'What is in this image?' },
-      { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
-    ],
-  },
+const messages: AgentMessage[] = [
+  new UserMessage([
+    { type: 'text', text: 'What is in this image?' },
+    { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
+  ]),
 ]
 ```
 
 ### Message utilities
 
 ```ts
-import {
-  normalizeMessage,
-  normalizeMessages,
-  denormalizeMessage,
-  estimateTokens,
-} from '@mech-code/core'
-
-// External Message → internal normalized form (string content becomes a content-block array)
-const internal = normalizeMessage({ role: 'user', content: 'Hello' })
+import { estimateTokens } from '@mech-code/core'
 
 // Fast approximate token count (character-based, no API call needed)
 const tokens = estimateTokens('Hello, world!')
@@ -445,7 +436,7 @@ const state = createAgentState()
 // or: { messages: [], usage: { inputTokens: 0, outputTokens: 0 } }
 
 // First turn
-state.messages.push({ role: 'user', content: 'List the files in src/' })
+state.messages.push(new UserMessage('List the files in src/'))
 for await (const event of agent.run({
   state,
   config: { signal: abortController.signal },
@@ -455,7 +446,7 @@ for await (const event of agent.run({
 }
 
 // Second turn — same state continues the conversation
-state.messages.push({ role: 'user', content: 'Now explain loop.ts' })
+state.messages.push(new UserMessage('Now explain loop.ts'))
 const result = await agent.complete({ state })
 console.log(result.text) // final assistant text
 console.log(result.turnsUsed) // how many turns this run used
@@ -498,6 +489,6 @@ const summaryAgent = mainAgent.fork({
 | `ProviderError`                            | Unified provider error class                        |
 | `defineTool`                               | Tool definition factory                             |
 | `registerTool` / `getTool` / `getAllTools` | Tool registry operations                            |
-| `normalizeMessage` / `denormalizeMessage`  | Message format conversion                           |
+| `UserMessage` / `AssistantMessage`         | Agent message classes                               |
 | `estimateTokens`                           | Fast approximate token count                        |
 | `Message` / `AgentEvent` / `Usage`         | Shared types (re-exported from `@mech-code/shared`) |

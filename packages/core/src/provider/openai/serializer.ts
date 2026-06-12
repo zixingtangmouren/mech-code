@@ -1,5 +1,6 @@
 import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
-import type { InternalMessage } from '../../message/types.js'
+import type { AgentMessage } from '../../message/message.js'
+import { normalizeMessages } from '../../message/normalize.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 
 // === OpenAI API 请求体类型 ===
@@ -46,8 +47,9 @@ type OpenAITool = {
 export class OpenAISerializer implements MessageSerializer<OpenAIRequest> {
   constructor(private readonly model: string) {}
 
-  serialize(messages: InternalMessage[], options: SerializeOptions): OpenAIRequest {
+  serialize(messages: AgentMessage[], options: SerializeOptions): OpenAIRequest {
     const { system, tools, modelParams } = options
+    const internalMessages = normalizeMessages(messages)
     const openAIMessages: OpenAIMessage[] = []
 
     // 系统提示放在消息数组首位
@@ -55,7 +57,7 @@ export class OpenAISerializer implements MessageSerializer<OpenAIRequest> {
       openAIMessages.push({ role: 'system', content: system })
     }
 
-    for (const msg of messages) {
+    for (const msg of internalMessages) {
       if (msg.role === 'system') {
         // messages 数组中的 system 也追加（追加到已有 system 后）
         openAIMessages.push({ role: 'system', content: msg.content })

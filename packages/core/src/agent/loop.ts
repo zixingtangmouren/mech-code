@@ -16,7 +16,6 @@ import type { LLMProvider, ChatResponse, StreamResult } from '../provider/types.
 import type { Tool, ToolOutput } from '../tools/types.js'
 import type { ToolDefinition } from '@mech-code/shared'
 import { MiddlewarePipeline } from '../middleware/pipeline.js'
-import { normalizeMessages } from '../message/normalize.js'
 import { buildChatParams } from '../message/builder.js'
 import { SuspendSignal, isSuspendSignal } from './hitl.js'
 import { deserializeAgentState, serializeAgentState } from './state.js'
@@ -342,9 +341,8 @@ function createRunContext(args: {
 }
 
 function createModelCallRequest(ctx: RunContext): ModelCallRequest {
-  const internalMessages = normalizeMessages(ctx.state.messages)
   const params = buildChatParams({
-    messages: internalMessages,
+    messages: ctx.state.messages,
     system: ctx.runtime.system || undefined,
     tools: ctx.runtime.tools.length > 0 ? ctx.runtime.tools : undefined,
   })
@@ -528,6 +526,7 @@ function appendToolMessages(
     }
     const toolMessage = new ToolMessage(
       call.id,
+      call.name,
       output.isError ? `Error: ${output.content}` : output.content,
       { metadata },
     )
@@ -717,6 +716,7 @@ export async function* runLoopFromCheckpoint(
         state.messages.push(
           new ToolMessage(
             call.id,
+            call.name,
             `Error: 用户拒绝执行此操作${decision.reason ? ': ' + decision.reason : ''}`,
           ),
         )
@@ -732,7 +732,11 @@ export async function* runLoopFromCheckpoint(
         }),
       )
       state.messages.push(
-        new ToolMessage(call.id, output.isError ? `Error: ${output.content}` : output.content),
+        new ToolMessage(
+          call.id,
+          call.name,
+          output.isError ? `Error: ${output.content}` : output.content,
+        ),
       )
     }
     ctx.loopState.pendingToolCalls = []

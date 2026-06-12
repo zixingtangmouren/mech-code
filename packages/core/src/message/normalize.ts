@@ -3,7 +3,7 @@ import type { AgentMessage } from './message.js'
 import type { InternalMessage } from './types.js'
 
 /**
- * 将单条外部 Message 规范化为 InternalMessage。
+ * Provider 序列化 helper：将单条 AgentMessage 规范化为 InternalMessage。
  * - 字符串内容 → 包装为 [{ type: 'text', text }]
  * - 数组内容 → 原样使用
  * - metadata 不会进入 Provider payload；tool 图片数据例外，会转成内部 _imageData 给 serializer。
@@ -17,6 +17,7 @@ export function normalizeMessage(msg: AgentMessage): InternalMessage {
       const normalized: InternalMessage = {
         role: 'tool',
         toolCallId: msg.toolCallId,
+        toolName: msg.toolName,
         content: msg.content,
       }
       const imageData = readImageData(msg.metadata)
@@ -43,7 +44,7 @@ export function normalizeMessage(msg: AgentMessage): InternalMessage {
   }
 }
 
-/** 将外部 Message 数组批量规范化为 InternalMessage 数组 */
+/** 将 AgentMessage 数组批量规范化为 InternalMessage 数组 */
 export function normalizeMessages(msgs: AgentMessage[]): InternalMessage[] {
   return msgs.map(normalizeMessage)
 }

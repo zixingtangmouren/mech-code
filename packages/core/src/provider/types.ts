@@ -1,5 +1,5 @@
 import type { AgentEvent, AssistantContentBlock, ToolDefinition, Usage } from '@mech-code/shared'
-import type { InternalMessage } from '../message/types.js'
+import type { AgentMessage } from '../message/message.js'
 
 // === 模型生成参数 ===
 
@@ -28,7 +28,7 @@ export interface ProviderConfig {
 // === 聊天参数（Provider 输入）===
 
 export interface ChatParams {
-  messages: InternalMessage[]
+  messages: AgentMessage[]
   system?: string
   tools?: ToolDefinition[]
 }
@@ -105,8 +105,8 @@ export interface SerializeOptions {
 // === 消息序列化器（Provider 内部使用）===
 
 /**
- * MessageSerializer — 将 InternalMessage[] 转换为厂商 API 请求体格式。
+ * MessageSerializer — Provider 内部使用，将 AgentMessage[] 转换为厂商 API 请求体格式。
  */
 export interface MessageSerializer<TVendorRequest = unknown> {
-  serialize(messages: InternalMessage[], options: SerializeOptions): TVendorRequest
+  serialize(messages: AgentMessage[], options: SerializeOptions): TVendorRequest
 }

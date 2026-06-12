@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { OpenAIResponsesSerializer } from '../responses-serializer.js'
-import type { InternalMessage } from '../../../message/types.js'
+import type { AgentMessage } from '../../../message/message.js'
+import {
+  AssistantMessage,
+  SystemMessage,
+  ToolMessage,
+  UserMessage,
+} from '../../../message/message.js'
 import type { ToolDefinition } from '@mech-code/shared'
 
 describe('OpenAIResponsesSerializer', () => {
@@ -13,15 +19,12 @@ describe('OpenAIResponsesSerializer', () => {
         inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
       },
     ]
-    const messages: InternalMessage[] = [
-      { role: 'system', content: 'Use concise answers.' },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Look at this' },
-          { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
-        ],
-      },
+    const messages: AgentMessage[] = [
+      new SystemMessage('Use concise answers.'),
+      new UserMessage([
+        { type: 'text', text: 'Look at this' },
+        { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
+      ]),
     ]
 
     const body = serializer.serialize(messages, {
@@ -66,15 +69,12 @@ describe('OpenAIResponsesSerializer', () => {
 
   it('serializes assistant history and tool results as response input items', () => {
     const serializer = new OpenAIResponsesSerializer('gpt-5')
-    const messages: InternalMessage[] = [
-      {
-        role: 'assistant',
-        content: [
-          { type: 'text', text: 'I will read it.' },
-          { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } },
-        ],
-      },
-      { role: 'tool', toolCallId: 'call_1', content: 'file contents' },
+    const messages: AgentMessage[] = [
+      new AssistantMessage([
+        { type: 'text', text: 'I will read it.' },
+        { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } },
+      ]),
+      new ToolMessage('call_1', 'read_file', 'file contents'),
     ]
 
     const body = serializer.serialize(messages, {})

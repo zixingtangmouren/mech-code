@@ -1,4 +1,4 @@
-import type { InternalMessage } from './types.js'
+import type { AgentMessage } from './message.js'
 
 /**
  * 对原始字符串进行 token 数量的近似估算。
@@ -9,8 +9,8 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
-/** 估算单条 InternalMessage 的 token 数量 */
-export function estimateMessageTokens(msg: InternalMessage): number {
+/** 估算单条 AgentMessage 的 token 数量 */
+export function estimateMessageTokens(msg: AgentMessage): number {
   // 每条消息的固定开销（角色标识 + 格式化）
   const overhead = 4
 
@@ -19,7 +19,8 @@ export function estimateMessageTokens(msg: InternalMessage): number {
     case 'tool':
       return overhead + estimateTokens(msg.content)
 
-    case 'user':
+    case 'user': {
+      if (typeof msg.content === 'string') return overhead + estimateTokens(msg.content)
       return (
         overhead +
         msg.content.reduce((sum, block) => {
@@ -28,8 +29,10 @@ export function estimateMessageTokens(msg: InternalMessage): number {
           return sum
         }, 0)
       )
+    }
 
-    case 'assistant':
+    case 'assistant': {
+      if (typeof msg.content === 'string') return overhead + estimateTokens(msg.content)
       return (
         overhead +
         msg.content.reduce((sum, block) => {
@@ -42,10 +45,11 @@ export function estimateMessageTokens(msg: InternalMessage): number {
           return sum
         }, 0)
       )
+    }
   }
 }
 
 /** 估算消息数组的总 token 数量 */
-export function estimateMessagesTokens(msgs: InternalMessage[]): number {
+export function estimateMessagesTokens(msgs: AgentMessage[]): number {
   return msgs.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0)
 }

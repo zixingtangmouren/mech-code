@@ -233,10 +233,14 @@ describe('todoMiddleware', () => {
     const providerReminderMessage = provider.streamCalls[0]?.messages[0]
     expect(providerReminderMessage?.role).toBe('user')
     expect(getMessageText(providerReminderMessage?.content)).toContain('Todo reminder:')
-    expect(providerReminderMessage).not.toHaveProperty('metadata')
+    expect(providerReminderMessage?.metadata).toEqual({
+      source: 'agent',
+      injected: true,
+      kind: 'todo_reminder',
+    })
     expect(provider.streamCalls[0]?.messages[1]).toMatchObject({
       role: 'user',
-      content: [{ type: 'text', text: 'continue' }],
+      content: 'continue',
     })
     expect(state.messages).toHaveLength(3)
     expect(state.messages[0]).toMatchObject({

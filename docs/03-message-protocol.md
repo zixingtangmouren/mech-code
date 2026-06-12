@@ -6,37 +6,25 @@
 
 ## 1. 设计原则
 
-- **Message 是 Agent Loop 的通信协议**：所有参与者（用户、LLM、工具）之间的交互通过 Message 进行
-- **统一内部表示**：所有厂商的消息格式和流式 chunk，进入 Agent Loop 前必须转换为标准内部 Message 结构
-- **Agent Loop 不感知厂商差异**：Provider adapter 负责双向格式转换，Loop Engine 只操作内部类型
+- **AgentMessage 是 Agent Loop 的通信协议**：所有参与者（用户、LLM、工具）之间的交互通过 `AgentMessage` 进行。
+- **Provider 内部处理厂商差异**：Agent Loop、middleware、`LLMProvider.chat/stream` 的 messages 入参均为 `AgentMessage[]`。
+- **序列化中间形态不外泄**：Provider serializer 可在内部把 `AgentMessage` 投影为规范化中间类型，再转换为厂商请求体；Agent Loop 不操作该中间类型。
 
 ---
 
 ## 2. 类型设计
 
-### 2.1 对外 Message（SDK 用户传入）
-
-面向 SDK 消费者的简化形式，允许 `string` 快捷写法：
+### 2.1 AgentMessage（Agent Loop 运行时）
 
 ```ts
-type Message =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string | UserContentBlock[] }
-  | { role: 'assistant'; content: string | AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ```
 
-### 2.2 内部 Message（Agent Loop 运行时）
+`AgentState.messages`、`ModelCallRequest.params.messages`、`ChatParams.messages` 都保持这个类型。
 
-Agent Loop 内部使用的规范化形式，所有 content 均为数组：
+### 2.2 Provider 序列化中间形态
 
-```ts
-type InternalMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: UserContentBlock[] }
-  | { role: 'assistant'; content: AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
-```
+Provider serializer 内部可使用规范化后的消息形态，例如将 `UserMessage('hello')` 投影为 `{ role: 'user', content: [{ type: 'text', text: 'hello' }] }`。该形态只服务于厂商 payload 组装，不作为 Agent Loop 或 middleware 的 API。
 
 ### 2.3 User Content Block
 
@@ -69,11 +57,7 @@ type AssistantContentBlock =
 工具执行结果，通过 `toolCallId` 与 assistant 消息中的 `tool_use.id` 关联：
 
 ```ts
-{
-  role: 'tool'
-  toolCallId: string
-  content: string
-}
+new ToolMessage(toolCallId, toolName, content)
 ```
 
 ---
@@ -83,55 +67,43 @@ type AssistantContentBlock =
 ```
 用户输入
 │
-├─ normalize: Message → InternalMessage
+├─ 构造 AgentMessage（如 UserMessage / ToolMessage）
 │
 ├─ [Agent Loop]
 │   │
-│   ├─ 组装请求: InternalMessage[] → Provider serialize → Vendor API Request
+│   ├─ 组装请求: AgentMessage[] → Provider 内部 serialize → Vendor API Request
 │   │
 │   ├─ 流式响应: Vendor Chunk → Provider parseStream → StreamEvent
 │   │                                                      │
 │   │                                             (实时 emit 事件给消费者)
 │   │
-│   ├─ 响应完成: 累积 StreamEvent → InternalMessage (role: assistant)
+│   ├─ 响应完成: 累积 StreamEvent → AssistantMessage
 │   │
 │   ├─ 如果有 tool_use:
 │   │   ├─ 执行工具
-│   │   ├─ 生成 InternalMessage (role: tool)
+│   │   ├─ 生成 ToolMessage
 │   │   └─ 追加到 messages[] → 回到循环顶部
 │   │
 │   └─ 无 tool_use → 结束循环
 │
-├─ 输出: InternalMessage[] → denormalize → Message[]（返回给 SDK 用户）
+├─ 输出: state.messages 保持 AgentMessage[]（由调用方持有）
 ```
 
 ---
 
-## 4. Normalize / Denormalize
+## 4. Provider 内部规范化
 
-### 4.1 Normalize（对外 → 内部）
+### 4.1 AgentMessage → Provider payload
 
-将用户传入的宽松格式转为内部规范格式：
+Provider 内部序列化时才做消息投影：
 
 ```ts
-function normalizeMessage(msg: Message): InternalMessage
+function serialize(messages: AgentMessage[], options: SerializeOptions): VendorRequest
 
 // 转换规则：
 // 'hello' → [{ type: 'text', text: 'hello' }]
 // string content → 包装为单个 text block 数组
-// 已经是数组的 → 直接使用
-```
-
-### 4.2 Denormalize（内部 → 对外）
-
-将内部格式转回对外形式（可选，主要用于 RunResult 返回）：
-
-```ts
-function denormalizeMessage(msg: InternalMessage): Message
-
-// 转换规则：
-// [{ type: 'text', text: 'hello' }] → 可简化为 'hello'（仅单个 text block 时）
-// 包含 tool_use / thinking → 保持数组形式
+// message.metadata → 不进入厂商 payload
 ```
 
 ---
@@ -140,11 +112,11 @@ function denormalizeMessage(msg: InternalMessage): Message
 
 ### 5.1 请求序列化
 
-将 InternalMessage[] 转换为厂商特定的 API 请求格式：
+Provider 内部将 AgentMessage[] 转换为厂商特定的 API 请求格式：
 
 ```ts
 interface MessageSerializer {
-  serialize(messages: InternalMessage[], options: SerializeOptions): VendorRequest
+  serialize(messages: AgentMessage[], options: SerializeOptions): VendorRequest
 }
 
 interface SerializeOptions {
@@ -157,11 +129,11 @@ interface SerializeOptions {
 #### Anthropic 格式
 
 ```ts
-// InternalMessage
-{ role: 'assistant', content: [
+// AgentMessage
+new AssistantMessage([
   { type: 'text', text: '让我来看看' },
   { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } }
-]}
+])
 
 // → Anthropic API
 { role: 'assistant', content: [
@@ -174,11 +146,11 @@ interface SerializeOptions {
 #### OpenAI 格式
 
 ```ts
-// InternalMessage
-{ role: 'assistant', content: [
+// AgentMessage
+new AssistantMessage([
   { type: 'text', text: '让我来看看' },
   { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } }
-]}
+])
 
 // → OpenAI API
 {
@@ -231,18 +203,18 @@ interface StreamNormalizer {
 
 ### 5.3 响应累积
 
-流结束后，从 StreamEvent 序列累积生成完整的 InternalMessage：
+流结束后，Provider 从 `AgentEvent` 序列累积生成完整 `ChatResponse.content`，Agent Loop 再追加 `AssistantMessage`：
 
 ```ts
-function accumulateAssistantMessage(events: StreamEvent[]): InternalMessage
+function accumulateAssistantContent(events: AgentEvent[]): AssistantContentBlock[]
 
 // 逻辑：
 // reasoning_start → reasoning_content×N → reasoning_end  ⇒  { type: 'thinking', text }
 // text_start → text_delta×N → text_end                   ⇒  { type: 'text', text }
 // tool_start → tool_input_delta×N                         ⇒  { type: 'tool_use', id, name, input }
 //
-// 最终拼装为:
-// { role: 'assistant', content: [...blocks] }
+// Agent Loop 最终写入:
+// new AssistantMessage(content)
 ```
 
 ---
@@ -251,10 +223,11 @@ function accumulateAssistantMessage(events: StreamEvent[]): InternalMessage
 
 ```
 packages/core/src/message/
-├── types.ts              # Message / InternalMessage / ContentBlock 类型
-├── normalize.ts          # Message ↔ InternalMessage 转换
+├── message.ts            # AgentMessage class 体系
+├── types.ts              # Provider 序列化中间类型 / ContentBlock 类型
+├── normalize.ts          # Provider 内部 AgentMessage → 中间类型转换
 ├── builder.ts            # 组装 messages + system + tools 为请求参数
-├── accumulator.ts        # StreamEvent[] → InternalMessage 累积器
+├── accumulator.ts        # AgentEvent[] → assistant content 累积器
 └── tokenizer.ts          # Token 计数估算
 
 packages/core/src/provider/

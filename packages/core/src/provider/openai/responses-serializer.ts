@@ -1,5 +1,7 @@
 import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
+import type { AgentMessage } from '../../message/message.js'
 import type { InternalMessage } from '../../message/types.js'
+import { normalizeMessages } from '../../message/normalize.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 
 // === OpenAI Responses API 请求体类型 ===
@@ -51,13 +53,14 @@ type OpenAIResponsesTool = {
 export class OpenAIResponsesSerializer implements MessageSerializer<OpenAIResponsesRequest> {
   constructor(private readonly model: string) {}
 
-  serialize(messages: InternalMessage[], options: SerializeOptions): OpenAIResponsesRequest {
+  serialize(messages: AgentMessage[], options: SerializeOptions): OpenAIResponsesRequest {
     const { tools, modelParams } = options
-    const instructions = this.collectInstructions(options.system, messages)
+    const internalMessages = normalizeMessages(messages)
+    const instructions = this.collectInstructions(options.system, internalMessages)
 
     const result: OpenAIResponsesRequest = {
       model: this.model,
-      input: this.convertInput(messages),
+      input: this.convertInput(internalMessages),
     }
 
     if (instructions) result.instructions = instructions

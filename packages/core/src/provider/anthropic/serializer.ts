@@ -1,5 +1,7 @@
 import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
+import type { AgentMessage } from '../../message/message.js'
 import type { InternalMessage } from '../../message/types.js'
+import { normalizeMessages } from '../../message/normalize.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 
 // === Anthropic API 请求体类型 ===
@@ -57,13 +59,14 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
     private readonly defaultMaxTokens = 8192,
   ) {}
 
-  serialize(messages: InternalMessage[], options: SerializeOptions): AnthropicRequest {
+  serialize(messages: AgentMessage[], options: SerializeOptions): AnthropicRequest {
     const { system, tools, modelParams } = options
+    const internalMessages = normalizeMessages(messages)
 
     const result: AnthropicRequest = {
       model: this.model,
       max_tokens: modelParams?.maxTokens ?? this.defaultMaxTokens,
-      messages: this.convertMessages(messages),
+      messages: this.convertMessages(internalMessages),
     }
 
     if (system) result.system = system

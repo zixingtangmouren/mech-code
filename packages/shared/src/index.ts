@@ -24,7 +24,7 @@ export type Message =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | UserContentBlock[] }
   | { role: 'assistant'; content: string | AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+  | { role: 'tool'; toolCallId: string; toolName?: string; content: string }
 
 // === Provider 配置 ===
 // ProviderConfig 已移至 @mech-code/core 的 provider/types.ts，在那里可引用完整的 ModelParams 类型。

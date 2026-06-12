@@ -3,6 +3,7 @@ import type { AgentEvent } from '@mech-code/shared'
 import { createAgent } from '../agent.js'
 import { createAgentState } from '../state.js'
 import { createMiddleware } from '../../middleware/types.js'
+import { UserMessage } from '../../message/message.js'
 import type { ChatParams, CallOptions, LLMProvider, StreamResult } from '../../provider/types.js'
 
 interface MockProvider extends LLMProvider {
@@ -208,5 +209,34 @@ describe('createAgent', () => {
     expect(stateEvents.map((event) => event.revision)).toEqual(
       stateEvents.map((_event, index) => index + 1),
     )
+  })
+
+  it('wrapModelCall 修改 params.messages 不会污染真实 state.messages', async () => {
+    const provider = createMockProvider()
+    const state = createAgentState()
+    state.messages.push(new UserMessage('original'))
+    const agent = createAgent({
+      provider,
+      middleware: [
+        createMiddleware({
+          name: 'transient-message-projection',
+          wrapModelCall(request, handler) {
+            const message = request.params.messages[0]
+            if (message?.role === 'user') message.content = 'transient'
+            return handler(request)
+          },
+        }),
+      ],
+    })
+
+    for await (const _event of agent.run({ state })) {
+      // consume stream
+    }
+
+    expect(provider.streamMock.mock.calls[0]?.[0].messages[0]).toMatchObject({
+      role: 'user',
+      content: 'transient',
+    })
+    expect(state.messages[0]).toMatchObject({ role: 'user', content: 'original' })
   })
 })

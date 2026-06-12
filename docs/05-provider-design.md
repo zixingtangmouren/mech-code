@@ -40,13 +40,14 @@ interface LLMProvider {
 
 ```typescript
 interface ChatParams {
-  messages: InternalMessage[]
+  messages: AgentMessage[]
   system?: string
   tools?: ToolDefinition[]
 }
 ```
 
 不包含模型参数（temperature 等），这些由 `CallOptions.modelParams` 和 `ProviderConfig.defaultParams` 在调用时注入。
+`messages` 保持 Agent 层的 `AgentMessage` 类型；具体厂商 payload 的转换只在 Provider 内部发生。
 
 ---
 
@@ -220,7 +221,7 @@ Provider 负责将厂商响应翻译为统一 `ProviderError`：
 
 ```
 AnthropicProvider
-├── serializer.ts        ← InternalMessage[] → Anthropic API 请求体
+├── serializer.ts        ← AgentMessage[] → Anthropic API 请求体
 ├── normalizer.ts        ← Anthropic SSE chunk → AgentEvent[]
 └── provider.ts          ← 组装调用：serialize → fetch → normalize
 ```
@@ -229,7 +230,7 @@ AnthropicProvider
 
 ```typescript
 interface MessageSerializer<TVendorRequest = unknown> {
-  serialize(messages: InternalMessage[], options: SerializeOptions): TVendorRequest
+  serialize(messages: AgentMessage[], options: SerializeOptions): TVendorRequest
 }
 
 interface SerializeOptions {
@@ -239,7 +240,7 @@ interface SerializeOptions {
 }
 ```
 
-将 InternalMessage 转换为厂商 API 要求的请求格式。
+将 AgentMessage 转换为厂商 API 要求的请求格式。serializer 内部可以先投影为 provider 规范化中间形态，但这个中间形态不暴露给 Agent Loop 和 middleware。
 
 ### StreamNormalizer
 

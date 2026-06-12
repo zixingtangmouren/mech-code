@@ -12,7 +12,9 @@ export type SerializedAgentMessage =
   | ({ role: 'assistant'; content: string | AssistantContentBlock[] } & {
       metadata?: MessageMetadata
     })
-  | ({ role: 'tool'; toolCallId: string; content: string } & { metadata?: MessageMetadata })
+  | ({ role: 'tool'; toolCallId: string; toolName?: string; content: string } & {
+      metadata?: MessageMetadata
+    })
 
 type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -56,16 +58,19 @@ export class AssistantMessage extends BaseMessage<'assistant', string | Assistan
 
 export class ToolMessage extends BaseMessage<'tool', string> {
   readonly toolCallId: string
+  readonly toolName: string
 
-  constructor(toolCallId: string, content: string, options?: MessageOptions) {
+  constructor(toolCallId: string, toolName: string, content: string, options?: MessageOptions) {
     super('tool', content, options)
     this.toolCallId = toolCallId
+    this.toolName = toolName
   }
 
   override toJSON(): SerializedAgentMessage {
     return {
       role: this.role,
       toolCallId: this.toolCallId,
+      toolName: this.toolName,
       content: this.content,
       ...(Object.keys(this.metadata).length > 0 ? { metadata: this.metadata } : {}),
     }
@@ -88,6 +93,8 @@ export function deserializeAgentMessage(message: SerializedAgentMessage): AgentM
     case 'assistant':
       return new AssistantMessage(message.content, { metadata })
     case 'tool':
-      return new ToolMessage(message.toolCallId, message.content, { metadata })
+      return new ToolMessage(message.toolCallId, message.toolName ?? 'unknown', message.content, {
+        metadata,
+      })
   }
 }

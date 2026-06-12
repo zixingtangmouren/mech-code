@@ -3,9 +3,9 @@ import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 export type { UserContentBlock, AssistantContentBlock }
 
 /**
- * InternalMessage —— Agent Loop 运行时类型。
- * 所有 content 字段均已规范化为数组（不使用字符串简写）。
- * Loop Engine 只操作此类型，不直接处理外部 Message 类型。
+ * InternalMessage —— Provider 序列化阶段的内部规范化类型。
+ * Agent Loop、middleware 和 LLMProvider 的公开入参使用 AgentMessage。
+ * Provider serializer 在内部把 AgentMessage 转成此类型，再转成厂商请求体。
  */
 export type InternalMessage =
   | { role: 'system'; content: string }
@@ -14,6 +14,7 @@ export type InternalMessage =
   | {
       role: 'tool'
       toolCallId: string
+      toolName?: string
       content: string
       _imageData?: { base64: string; mediaType: string }
     }

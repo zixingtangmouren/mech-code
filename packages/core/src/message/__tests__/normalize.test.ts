@@ -7,12 +7,13 @@ describe('message classes', () => {
   it('creates class messages with metadata', () => {
     const user = new UserMessage('hello', { metadata: { source: 'test' } })
     const assistant = new AssistantMessage([{ type: 'text', text: 'ok' }])
-    const tool = new ToolMessage('call_1', 'result')
+    const tool = new ToolMessage('call_1', 'read_file', 'result')
 
     expect(user.role).toBe('user')
     expect(user.metadata).toEqual({ source: 'test' })
     expect(assistant.metadata).toEqual({})
     expect(tool.toolCallId).toBe('call_1')
+    expect(tool.toolName).toBe('read_file')
   })
 
   it('serializes state to plain json and restores message classes', () => {
@@ -39,10 +40,11 @@ describe('normalizeMessage', () => {
   })
 
   it('passes tool message through unchanged', () => {
-    const msg = new ToolMessage('call_1', '{"ok":true}')
+    const msg = new ToolMessage('call_1', 'read_file', '{"ok":true}')
     expect(normalizeMessage(msg)).toEqual({
       role: 'tool',
       toolCallId: 'call_1',
+      toolName: 'read_file',
       content: '{"ok":true}',
     })
   })
@@ -81,13 +83,14 @@ describe('normalizeMessage', () => {
   })
 
   it('maps tool image metadata to internal image data', () => {
-    const msg = new ToolMessage('call_1', 'image result', {
+    const msg = new ToolMessage('call_1', 'read_image', 'image result', {
       metadata: { imageData: { base64: 'abc', mediaType: 'image/png' } },
     })
 
     expect(normalizeMessage(msg)).toEqual({
       role: 'tool',
       toolCallId: 'call_1',
+      toolName: 'read_image',
       content: 'image result',
       _imageData: { base64: 'abc', mediaType: 'image/png' },
     })

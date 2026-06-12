@@ -36,13 +36,7 @@ export { OpenAIProvider } from './provider/openai/provider.js'
 export { OpenAICompatibleProvider } from './provider/openai-compatible/provider.js'
 
 // 消息协议
-export type { InternalMessage, UserContentBlock, AssistantContentBlock } from './message/types.js'
-export {
-  normalizeMessage,
-  normalizeMessages,
-  denormalizeMessage,
-  denormalizeMessages,
-} from './message/normalize.js'
+export type { UserContentBlock, AssistantContentBlock } from './message/types.js'
 export { MessageAccumulator } from './message/accumulator.js'
 export { buildChatParams } from './message/builder.js'
 export {

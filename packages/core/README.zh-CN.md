@@ -17,7 +17,13 @@ pnpm add @mech-code/core
 ## 快速开始
 
 ```ts
-import { createAgent, AnthropicProvider, defineTool } from '@mech-code/core'
+import {
+  AnthropicProvider,
+  UserMessage,
+  createAgent,
+  createAgentState,
+  defineTool,
+} from '@mech-code/core'
 import { z } from 'zod'
 
 // 1. 定义工具
@@ -47,7 +53,7 @@ const agent = createAgent({
 
 // 4. 创建会话状态（由调用方持有，跨轮次持续累积）
 const state = createAgentState()
-state.messages.push({ role: 'user', content: 'Hello!' })
+state.messages.push(new UserMessage('Hello!'))
 
 // 5. 流式运行
 for await (const event of agent.run({ state })) {
@@ -364,42 +370,27 @@ agent.use(myMiddleware)
 
 ## 消息协议
 
-### 外部消息格式（面向使用者）
+### Agent 消息格式
 
 ```ts
-type Message =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string | UserContentBlock[] } // 支持多模态
-  | { role: 'assistant'; content: string | AssistantContentBlock[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ```
 
 ### 多模态输入
 
 ```ts
-const messages: Message[] = [
-  {
-    role: 'user',
-    content: [
-      { type: 'text', text: '这张图里有什么？' },
-      { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
-    ],
-  },
+const messages: AgentMessage[] = [
+  new UserMessage([
+    { type: 'text', text: '这张图里有什么？' },
+    { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
+  ]),
 ]
 ```
 
 ### 消息工具函数
 
 ```ts
-import {
-  normalizeMessage,
-  normalizeMessages,
-  denormalizeMessage,
-  estimateTokens,
-} from '@mech-code/core'
-
-// 外部 Message → 内部规范化格式（字符串内容转为内容块数组）
-const internal = normalizeMessage({ role: 'user', content: 'Hello' })
+import { estimateTokens } from '@mech-code/core'
 
 // 估算 token 数（基于字符数的快速近似，无需调用 API）
 const tokens = estimateTokens('Hello, world!')
@@ -446,7 +437,7 @@ const state = createAgentState()
 // 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 } }
 
 // 第一轮对话
-state.messages.push({ role: 'user', content: '列出 src/ 下的文件' })
+state.messages.push(new UserMessage('列出 src/ 下的文件'))
 for await (const event of agent.run({
   state,
   config: { signal: abortController.signal },
@@ -456,7 +447,7 @@ for await (const event of agent.run({
 }
 
 // 第二轮对话 —— 同一个 state 继续
-state.messages.push({ role: 'user', content: '解释一下 loop.ts 的实现' })
+state.messages.push(new UserMessage('解释一下 loop.ts 的实现'))
 const result = await agent.complete({ state })
 console.log(result.text) // 本次 assistant 的文本输出
 console.log(result.turnsUsed) // 本次 run 用了几轮
@@ -499,6 +490,6 @@ const summaryAgent = mainAgent.fork({
 | `ProviderError`                            | 统一错误类                                    |
 | `defineTool`                               | 工具定义工厂                                  |
 | `registerTool` / `getTool` / `getAllTools` | 工具注册表操作                                |
-| `normalizeMessage` / `denormalizeMessage`  | 消息格式转换                                  |
+| `UserMessage` / `AssistantMessage`         | Agent 消息类                                  |
 | `estimateTokens`                           | Token 数快速估算                              |
 | `Message` / `AgentEvent` / `Usage`         | 共享类型（来自 `@mech-code/shared` 的再导出） |

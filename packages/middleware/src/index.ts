@@ -15,7 +15,7 @@ export {
   type ToolResultBudgetOptions,
   type ToolResultCleanupOptions,
   type ToolResultStorageOptions,
-} from './context-management.js'
+} from './context-management/index.js'
 
 export {
   todoMiddleware,
