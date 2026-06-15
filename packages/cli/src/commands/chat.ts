@@ -11,11 +11,9 @@ export function registerChatCommand(program: Command): void {
       const React = await import('react')
       const { App } = await import('../ui/App.js')
       const { loadConfig, createProviderFromConfig } = await import('../config/loader.js')
-      const { resolveContextCompactConfig, resolveToolResultConfig } =
-        await import('../config/schema.js')
+      const { buildCliMiddleware, CliMiddlewareConfigError } =
+        await import('../config/middleware.js')
       const { createAgent } = await import('@mech-code/core')
-      const { contextCompactMiddleware, todoMiddleware, toolResultMiddleware } =
-        await import('@mech-code/middleware')
       const { getBuiltinTools } = await import('@mech-code/tools')
       const { buildSystemPrompt } = await import('../prompts/system.js')
 
@@ -42,46 +40,15 @@ export function registerChatCommand(program: Command): void {
       const cwd = process.cwd()
       const tools = getBuiltinTools()
       const system = config.system ?? buildSystemPrompt(cwd)
-      const middleware = [todoMiddleware()]
-      const createConfiguredProvider = (name: string) => {
-        if (!config.providers?.[name]) {
-          console.error(
-            `错误: contextCompact 引用了不存在的 provider "${name}"。\n` +
-              `可用 providers: ${Object.keys(config.providers ?? {}).join(', ') || '(无)'}`,
-          )
+      let middleware
+      try {
+        middleware = buildCliMiddleware(config, { createProviderFromConfig })
+      } catch (error) {
+        if (error instanceof CliMiddlewareConfigError) {
+          console.error(`错误: ${error.message}`)
           process.exit(1)
         }
-        return createProviderFromConfig(name, config.providers[name]!)
-      }
-      const toolResult = resolveToolResultConfig(config)
-      if (toolResult) {
-        middleware.push(
-          toolResultMiddleware({
-            maxResultChars: toolResult.maxResultChars,
-            maxResultTokens: toolResult.maxResultTokens,
-            previewChars: toolResult.previewChars,
-            strategy: toolResult.strategy,
-            storage: toolResult.storage,
-            cleanup: toolResult.cleanup,
-          }),
-        )
-      }
-
-      const contextCompact = resolveContextCompactConfig(config)
-      if (contextCompact) {
-        const summaryProvider = contextCompact.summaryProvider
-          ? createConfiguredProvider(contextCompact.summaryProvider)
-          : undefined
-
-        middleware.push(
-          contextCompactMiddleware({
-            summaryProvider,
-            modelContextWindow: contextCompact.modelContextWindow,
-            trigger: contextCompact.trigger,
-            summary: contextCompact.summary,
-            reactiveCompact: contextCompact.reactiveCompact,
-          }),
-        )
+        throw error
       }
 
       const agent = createAgent({

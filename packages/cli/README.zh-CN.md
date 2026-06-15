@@ -55,11 +55,38 @@ mech chat -m claude-opus-4-5
 {
   "provider": "claude",
   "model": "claude-opus-4-5",
-  "system": "You are a code assistant for this project."
+  "system": "You are a code assistant for this project.",
+  "toolResult": {
+    "maxResultChars": 50000,
+    "previewChars": 8000,
+    "strategy": "preview_and_store",
+    "storage": { "type": "state" },
+    "cleanup": {
+      "enabled": true,
+      "trigger": { "turns": 10 },
+      "keepRecentToolResults": 10
+    }
+  },
+  "contextCompact": {
+    "summaryProvider": "claude",
+    "modelContextWindow": 200000,
+    "trigger": { "fraction": 0.7 },
+    "summary": {
+      "maxTokens": 4096,
+      "temperature": 0
+    },
+    "reactiveCompact": {
+      "enabled": true,
+      "maxRetries": 1
+    }
+  }
 }
 ```
 
 配置优先级：**CLI 参数 > `.mech.json` > `~/.mech/config.json` > 环境变量**
+
+`toolResult` 和 `contextCompact` 是独立的中间件配置块；不再支持旧的
+`contextManagement` 配置。
 
 ## Slash 命令
 
