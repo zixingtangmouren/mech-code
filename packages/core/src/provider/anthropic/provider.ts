@@ -1,6 +1,7 @@
 import type { AssistantContentBlock, Usage } from '@mech-code/shared'
 import type { ChatParams, CallOptions, ChatResponse, StreamResult, ModelParams } from '../types.js'
 import { BaseProvider, parseSse, wrapFetchError } from '../base.js'
+import { AssistantMessage } from '../../message/message.js'
 import { AnthropicSerializer } from './serializer.js'
 import { AnthropicStreamNormalizer } from './normalizer.js'
 
@@ -113,7 +114,7 @@ export class AnthropicProvider extends BaseProvider {
       outputTokens: data.usage.output_tokens,
     }
 
-    return { content, usage, stopReason: data.stop_reason }
+    return { message: new AssistantMessage(content), usage, stopReason: data.stop_reason }
   }
 }
 

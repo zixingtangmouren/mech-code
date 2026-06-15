@@ -5,6 +5,7 @@ import type { AgentMiddleware, ModelCallRequest, RunContext, ToolCallRequest } f
 import type { Tool, ToolOutput } from '../../tools/types.js'
 import type { AgentState } from '../../agent/state.js'
 import type { LLMProvider, StreamResult } from '../../provider/types.js'
+import { AssistantMessage } from '../../message/message.js'
 
 // === 辅助工厂 ===
 
@@ -212,7 +213,7 @@ describe('MiddlewarePipeline', () => {
       const streamResult: StreamResult = {
         stream: (async function* () {})(),
         final: Promise.resolve({
-          content: [{ type: 'text', text: 'ok' }],
+          message: new AssistantMessage([{ type: 'text', text: 'ok' }]),
           usage: { inputTokens: 0, outputTokens: 0 },
           stopReason: 'end_turn',
         }),

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { defineTool } from '../define.js'
 import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '../registry.js'
 import type { ToolRunContext } from '../types.js'
+import { AssistantMessage } from '../../message/message.js'
 
 // 测试用的最小执行上下文
 const mockCtx: ToolRunContext = {
@@ -13,14 +14,14 @@ const mockCtx: ToolRunContext = {
     provider: {
       name: 'mock',
       chat: async () => ({
-        content: [],
+        message: new AssistantMessage([]),
         usage: { inputTokens: 0, outputTokens: 0 },
         stopReason: 'end_turn',
       }),
       stream: () => ({
         stream: (async function* () {})(),
         final: Promise.resolve({
-          content: [],
+          message: new AssistantMessage([]),
           usage: { inputTokens: 0, outputTokens: 0 },
           stopReason: 'end_turn',
         }),

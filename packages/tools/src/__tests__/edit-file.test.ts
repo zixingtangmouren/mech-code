@@ -3,7 +3,7 @@ import { writeFile, mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { editFileTool } from '../edit-file.js'
-import type { ToolRunContext, ReadCacheEntry } from '@mech-code/core'
+import { AssistantMessage, type ToolRunContext, type ReadCacheEntry } from '@mech-code/core'
 
 // 测试用临时目录
 let testDir: string
@@ -50,13 +50,17 @@ function createToolContext(
       provider: {
         name: 'mock',
         async chat() {
-          return { content: [], usage: { inputTokens: 0, outputTokens: 0 }, stopReason: 'end_turn' }
+          return {
+            message: new AssistantMessage([]),
+            usage: { inputTokens: 0, outputTokens: 0 },
+            stopReason: 'end_turn',
+          }
         },
         stream() {
           return {
             stream: (async function* () {})(),
             final: Promise.resolve({
-              content: [],
+              message: new AssistantMessage([]),
               usage: { inputTokens: 0, outputTokens: 0 },
               stopReason: 'end_turn',
             }),

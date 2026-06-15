@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@mech-code/shared'
 import type { ChatResponse, StreamResult, StreamNormalizer } from './types.js'
 import { MessageAccumulator } from '../message/accumulator.js'
+import { AssistantMessage } from '../message/message.js'
 
 export interface StreamResultRetryContext {
   error: unknown
@@ -56,7 +57,7 @@ export function createStreamResult<TVendorChunk>(options: {
       const meta = normalizer.getStreamMeta()
       const msg = accumulator.flush()
       resolveFinale({
-        content: msg.role === 'assistant' ? msg.content : [],
+        message: new AssistantMessage(msg.role === 'assistant' ? msg.content : []),
         usage: meta.usage,
         stopReason: meta.stopReason,
       })

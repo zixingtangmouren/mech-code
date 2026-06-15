@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { retryStreamResult } from '../stream-result.js'
 import type { ChatResponse, StreamResult } from '../types.js'
+import { AssistantMessage } from '../../message/message.js'
 
 describe('retryStreamResult', () => {
   it('retries when stream fails before emitting events', async () => {
@@ -10,7 +11,7 @@ describe('retryStreamResult', () => {
         yield { type: 'text_start' as const }
       })(),
       final: {
-        content: [{ type: 'text', text: 'ok' }],
+        message: new AssistantMessage([{ type: 'text', text: 'ok' }]),
         usage: { inputTokens: 1, outputTokens: 1 },
         stopReason: 'end_turn',
       },
@@ -71,7 +72,7 @@ function createResult(options: {
 
 function emptyResponse(): ChatResponse {
   return {
-    content: [],
+    message: new AssistantMessage([]),
     usage: { inputTokens: 0, outputTokens: 0 },
     stopReason: 'error',
   }

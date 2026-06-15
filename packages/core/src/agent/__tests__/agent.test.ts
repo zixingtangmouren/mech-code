@@ -3,8 +3,14 @@ import type { AgentEvent } from '@mech-code/shared'
 import { createAgent } from '../agent.js'
 import { createAgentState } from '../state.js'
 import { createMiddleware } from '../../middleware/types.js'
-import { UserMessage } from '../../message/message.js'
-import type { ChatParams, CallOptions, LLMProvider, StreamResult } from '../../provider/types.js'
+import { AssistantMessage, UserMessage } from '../../message/message.js'
+import type {
+  CallOptions,
+  ChatParams,
+  ChatResponse,
+  LLMProvider,
+  StreamResult,
+} from '../../provider/types.js'
 
 interface MockProvider extends LLMProvider {
   streamMock: ReturnType<typeof vi.fn<(params: ChatParams, options?: CallOptions) => StreamResult>>
@@ -15,11 +21,7 @@ function createMockProvider(): MockProvider {
   const streamMock = vi.fn(
     (_params: ChatParams, _options?: CallOptions): StreamResult => ({
       stream: (async function* () {})(),
-      final: Promise.resolve({
-        content: [{ type: 'text' as const, text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      }),
+      final: Promise.resolve(assistantResponse([{ type: 'text' as const, text: 'ok' }])),
       abort: vi.fn(),
     }),
   )
@@ -122,18 +124,19 @@ describe('createAgent', () => {
     const provider = createMockProvider()
     provider.streamMock.mockImplementation(() => ({
       stream: (async function* () {})(),
-      final: Promise.resolve({
-        content: [
-          {
-            type: 'tool_use' as const,
-            id: 'tool-1',
-            name: 'missing_tool',
-            input: {},
-          },
-        ],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'tool_use',
-      }),
+      final: Promise.resolve(
+        assistantResponse(
+          [
+            {
+              type: 'tool_use' as const,
+              id: 'tool-1',
+              name: 'missing_tool',
+              input: {},
+            },
+          ],
+          'tool_use',
+        ),
+      ),
       abort: vi.fn(),
     }))
     const state = createAgentState()
@@ -240,3 +243,14 @@ describe('createAgent', () => {
     expect(state.messages[0]).toMatchObject({ role: 'user', content: 'original' })
   })
 })
+
+function assistantResponse(
+  content: ConstructorParameters<typeof AssistantMessage>[0],
+  stopReason = 'end_turn',
+): ChatResponse {
+  return {
+    message: new AssistantMessage(content),
+    usage: { inputTokens: 1, outputTokens: 1 },
+    stopReason,
+  }
+}

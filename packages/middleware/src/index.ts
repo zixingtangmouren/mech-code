@@ -1,21 +1,27 @@
 export {
-  CONTEXT_MANAGEMENT_STATE_KEY,
-  contextManagementMiddleware,
-  type ContextManagementMiddlewareOptions,
-  type ContextManagementState,
+  CONTEXT_COMPACT_STATE_KEY,
+  contextCompactMiddleware,
+  type ContextCompactMiddlewareOptions,
+  type ContextCompactState,
   type ContextSummaryRecord,
   type ContextTrigger,
-  type KeepStrategy,
   type ReactiveCompactOptions,
-  type StoredToolResultRecord,
   type SummaryOptions,
   type SummarySource,
   type SummarySourceResult,
   type TokenCounter,
+} from './context-compact/index.js'
+
+export {
+  TOOL_RESULT_STATE_KEY,
+  toolResultMiddleware,
+  type StoredToolResultRecord,
   type ToolResultBudgetOptions,
   type ToolResultCleanupOptions,
+  type ToolResultMiddlewareOptions,
+  type ToolResultState,
   type ToolResultStorageOptions,
-} from './context-management/index.js'
+} from './tool-result/index.js'
 
 export {
   todoMiddleware,

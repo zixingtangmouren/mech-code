@@ -1,41 +1,31 @@
 import { ProviderError, retryStreamResult } from '@mech-code/core'
 import type { ChatParams, ModelCallHandler, ModelCallRequest, StreamResult } from '@mech-code/core'
 import { compactContext } from './compact.js'
-import { getProviderVisibleMessages } from './projection.js'
-import { getContextManagementState } from './state.js'
-import type {
-  ContextManagementMiddlewareOptions,
-  ResolvedReactiveCompactOptions,
-  ResolvedToolResultCleanupOptions,
-} from './types.js'
+import { getVisibleMessages } from './visibility.js'
+import type { ContextCompactMiddlewareOptions, ResolvedReactiveCompactOptions } from './types.js'
 
 export async function callModelWithReactiveCompact(
   request: ModelCallRequest,
   handler: ModelCallHandler,
-  options: ContextManagementMiddlewareOptions,
+  options: ContextCompactMiddlewareOptions,
   reactive: ResolvedReactiveCompactOptions,
-  cleanup: ResolvedToolResultCleanupOptions,
 ): Promise<StreamResult> {
   let attempts = 0
 
   const retry = async (error: unknown): Promise<StreamResult | null> => {
     if (!shouldReactiveCompact(error, reactive, attempts)) return null
     attempts++
-    const compacted = await compactContext(
-      request.context,
-      options,
-      {
-        source: 'reactive_compact',
-        keep: reactive.fallbackKeep,
-      },
-      cleanup,
-    )
+
+    const compacted = await compactContext(request.context, request.params.messages, options, {
+      source: 'reactive_compact',
+    })
     if (!compacted) return null
-    return handler(withProviderVisibleMessages(request, cleanup))
+
+    return handler(withVisibleStateMessages(request))
   }
 
   try {
-    const result = await handler(withProviderVisibleMessages(request, cleanup))
+    const result = await handler(request)
     return retryStreamResult(result, ({ error }) => retry(error))
   } catch (error) {
     const retryResult = await retry(error)
@@ -57,16 +47,12 @@ function shouldReactiveCompact(
   )
 }
 
-function withProviderVisibleMessages(
-  request: ModelCallRequest,
-  cleanup: ResolvedToolResultCleanupOptions,
-): ModelCallRequest {
-  const state = getContextManagementState(request.context.state)
+export function withVisibleStateMessages(request: ModelCallRequest): ModelCallRequest {
   return {
     ...request,
     params: {
       ...request.params,
-      messages: getProviderVisibleMessages(request.context, state, cleanup),
+      messages: getVisibleMessages(request.context.state.messages),
     } satisfies ChatParams,
   }
 }

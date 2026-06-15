@@ -1,20 +1,11 @@
 import { ToolMessage } from '@mech-code/core'
-import type { AgentMessage, RunContext } from '@mech-code/core'
-import { renderToolPreview } from './tool-results.js'
-import type { ContextManagementState, ResolvedToolResultCleanupOptions } from './types.js'
-import { getVisibleMessages } from './visibility.js'
-
-export function getProviderVisibleMessages(
-  ctx: RunContext,
-  state: ContextManagementState,
-  cleanup: ResolvedToolResultCleanupOptions,
-): AgentMessage[] {
-  return projectToolResultMessages(getVisibleMessages(ctx.state.messages), state, cleanup)
-}
+import type { AgentMessage } from '@mech-code/core'
+import { renderToolPreview } from './records.js'
+import type { ResolvedToolResultCleanupOptions, ToolResultState } from './types.js'
 
 export function projectToolResultMessages(
   messages: AgentMessage[],
-  state: ContextManagementState,
+  state: ToolResultState,
   cleanup: ResolvedToolResultCleanupOptions,
 ): AgentMessage[] {
   return messages.map((message) => {
@@ -31,10 +22,10 @@ export function projectToolResultMessages(
 
 function projectToolResultContent(
   message: Extract<AgentMessage, { role: 'tool' }>,
-  state: ContextManagementState,
+  state: ToolResultState,
   cleanup: ResolvedToolResultCleanupOptions,
 ): string {
-  const record = state.toolResults[message.toolCallId]
+  const record = state.records[message.toolCallId]
   if (!record) return message.content
   if (record.cleared) return cleanup.replacementText
   return renderToolPreview(record)

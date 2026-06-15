@@ -19,7 +19,7 @@ import { MiddlewarePipeline } from '../middleware/pipeline.js'
 import { buildChatParams } from '../message/builder.js'
 import { SuspendSignal, isSuspendSignal } from './hitl.js'
 import { deserializeAgentState, serializeAgentState } from './state.js'
-import { AssistantMessage, ToolMessage } from '../message/message.js'
+import { ToolMessage } from '../message/message.js'
 import type { ResumeParams, ToolCallDecision } from './hitl.js'
 
 /** Agent Loop 的运行配置（从 AgentConfig 解构而来） */
@@ -75,6 +75,10 @@ async function* forwardStreamEvents(
 
 function extractToolCalls(content: AssistantContentBlock[]): ToolCall[] {
   return content.flatMap((block) => (block.type === 'tool_use' ? [block] : []))
+}
+
+function getAssistantBlocks(response: ChatResponse): AssistantContentBlock[] {
+  return Array.isArray(response.message.content) ? response.message.content : []
 }
 
 function accumulateUsage(
@@ -559,11 +563,11 @@ async function* runMainLoop(
     await pipeline.runAfterModel(ctx)
     yield* flushBoundary(ctx, tracker, 'after_model')
 
-    ctx.state.messages.push(new AssistantMessage(response.content))
+    ctx.state.messages.push(response.message)
     accumulateUsage(ctx.state, response.usage)
     yield* flushBoundary(ctx, tracker, 'assistant_message')
 
-    const toolCalls = extractToolCalls(response.content)
+    const toolCalls = extractToolCalls(getAssistantBlocks(response))
     loopState.pendingToolCalls = toolCalls.map((call) => ({
       id: call.id,
       name: call.name,

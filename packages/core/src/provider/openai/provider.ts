@@ -1,6 +1,7 @@
 import type { AssistantContentBlock, Usage } from '@mech-code/shared'
 import type { ChatParams, CallOptions, ChatResponse, StreamResult, ModelParams } from '../types.js'
 import { BaseProvider, parseSse, wrapFetchError } from '../base.js'
+import { AssistantMessage } from '../../message/message.js'
 import { OpenAISerializer } from './serializer.js'
 import { OpenAIStreamNormalizer } from './normalizer.js'
 import { OpenAIResponsesSerializer } from './responses-serializer.js'
@@ -181,7 +182,7 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     return {
-      content,
+      message: new AssistantMessage(content),
       usage,
       stopReason: this.mapFinishReason(choice.finish_reason ?? 'stop'),
     }
@@ -235,7 +236,7 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     return {
-      content,
+      message: new AssistantMessage(content),
       usage,
       stopReason: content.some((block) => block.type === 'tool_use')
         ? 'tool_use'

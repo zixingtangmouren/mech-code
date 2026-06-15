@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolveContextManagementConfig, resolveProviderConfig } from '../schema.js'
+import {
+  resolveContextCompactConfig,
+  resolveProviderConfig,
+  resolveToolResultConfig,
+} from '../schema.js'
 
 describe('resolveProviderConfig', () => {
   it('passes protocol and default params through to provider config', () => {
@@ -33,27 +37,45 @@ describe('resolveProviderConfig', () => {
   })
 })
 
-describe('resolveContextManagementConfig', () => {
-  it('enables context management when the config block exists', () => {
+describe('resolveToolResultConfig', () => {
+  it('enables tool result middleware when the config block exists', () => {
     expect(
-      resolveContextManagementConfig({
-        contextManagement: {
+      resolveToolResultConfig({
+        toolResult: {
+          maxResultChars: 100,
+          cleanup: { enabled: true, trigger: { turns: 3 } },
+        },
+      }),
+    ).toEqual({
+      maxResultChars: 100,
+      cleanup: { enabled: true, trigger: { turns: 3 } },
+    })
+  })
+
+  it('returns undefined when tool result middleware is explicitly disabled', () => {
+    expect(resolveToolResultConfig({ toolResult: { enabled: false } })).toBeUndefined()
+  })
+})
+
+describe('resolveContextCompactConfig', () => {
+  it('enables context compact middleware when the config block exists', () => {
+    expect(
+      resolveContextCompactConfig({
+        contextCompact: {
           summaryProvider: 'summary',
           trigger: { messages: 10 },
-          keep: { messages: 4 },
         },
       }),
     ).toEqual({
       summaryProvider: 'summary',
       trigger: { messages: 10 },
-      keep: { messages: 4 },
     })
   })
 
-  it('returns undefined when context management is explicitly disabled', () => {
+  it('returns undefined when context compact middleware is explicitly disabled', () => {
     expect(
-      resolveContextManagementConfig({
-        contextManagement: { enabled: false, trigger: { messages: 10 } },
+      resolveContextCompactConfig({
+        contextCompact: { enabled: false, trigger: { messages: 10 } },
       }),
     ).toBeUndefined()
   })

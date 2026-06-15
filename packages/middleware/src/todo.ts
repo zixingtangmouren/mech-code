@@ -402,7 +402,7 @@ function isTodoState(value: unknown): value is TodoState {
 }
 
 function countToolCalls(ctx: RunContext, toolName: string): number {
-  const content = ctx.loopState.lastResponse?.content
+  const content = ctx.loopState.lastResponse?.message.content
   if (!Array.isArray(content)) return 0
   return content.filter((block) => block.type === 'tool_use' && block.name === toolName).length
 }

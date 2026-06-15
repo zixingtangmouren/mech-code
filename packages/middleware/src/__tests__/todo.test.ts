@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { UserMessage, createAgent, createAgentState, createMiddleware } from '@mech-code/core'
+import {
+  AssistantMessage,
+  UserMessage,
+  createAgent,
+  createAgentState,
+  createMiddleware,
+} from '@mech-code/core'
 import type {
   AgentState,
   CallOptions,
@@ -39,13 +45,7 @@ function createProvider(finals: ChatResponse[]): MockProvider {
 
 describe('todoMiddleware', () => {
   it('registers write_todos and initializes todo state', async () => {
-    const provider = createProvider([
-      {
-        content: [{ type: 'text', text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
-    ])
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
     const state = createAgentState()
     const agent = createAgent({ provider, middleware: [todoMiddleware()] })
 
@@ -60,8 +60,8 @@ describe('todoMiddleware', () => {
 
   it('updates items from write_todos', async () => {
     const provider = createProvider([
-      {
-        content: [
+      assistantResponse(
+        [
           {
             type: 'tool_use',
             id: 'todo-1',
@@ -77,14 +77,9 @@ describe('todoMiddleware', () => {
             },
           },
         ],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'tool_use',
-      },
-      {
-        content: [{ type: 'text', text: 'done' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
+        'tool_use',
+      ),
+      assistantResponse([{ type: 'text', text: 'done' }]),
     ])
     const state = createAgentState()
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
@@ -101,8 +96,8 @@ describe('todoMiddleware', () => {
 
   it('clears todo state when all todos are completed', async () => {
     const provider = createProvider([
-      {
-        content: [
+      assistantResponse(
+        [
           {
             type: 'tool_use',
             id: 'todo-1',
@@ -110,14 +105,9 @@ describe('todoMiddleware', () => {
             input: { todos: [{ content: 'Verify', status: 'completed' }] },
           },
         ],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'tool_use',
-      },
-      {
-        content: [{ type: 'text', text: 'done' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
+        'tool_use',
+      ),
+      assistantResponse([{ type: 'text', text: 'done' }]),
     ])
     const state = createAgentState()
     state[TODO_STORE_KEY] = {
@@ -142,8 +132,8 @@ describe('todoMiddleware', () => {
 
   it('rejects multiple write_todos calls in one assistant turn', async () => {
     const provider = createProvider([
-      {
-        content: [
+      assistantResponse(
+        [
           {
             type: 'tool_use',
             id: 'todo-1',
@@ -157,14 +147,9 @@ describe('todoMiddleware', () => {
             input: { todos: [{ content: 'Second', status: 'pending' }] },
           },
         ],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'tool_use',
-      },
-      {
-        content: [{ type: 'text', text: 'retry later' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
+        'tool_use',
+      ),
+      assistantResponse([{ type: 'text', text: 'retry later' }]),
     ])
     const state = createAgentState()
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
@@ -185,13 +170,7 @@ describe('todoMiddleware', () => {
 
   it('injects reminder as an agent user message before the latest user message when both thresholds are met', async () => {
     const observedMessages: AgentState['messages'][] = []
-    const provider = createProvider([
-      {
-        content: [{ type: 'text', text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
-    ])
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
     const state = createAgentState()
     state.messages.push(new UserMessage('continue'))
     state[TODO_STORE_KEY] = {
@@ -253,13 +232,7 @@ describe('todoMiddleware', () => {
   })
 
   it('does not inject reminder until both reminder thresholds are met', async () => {
-    const provider = createProvider([
-      {
-        content: [{ type: 'text', text: 'ok' }],
-        usage: { inputTokens: 1, outputTokens: 1 },
-        stopReason: 'end_turn',
-      },
-    ])
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
     const state = createAgentState()
     state.messages.push(new UserMessage('continue'))
     state[TODO_STORE_KEY] = {
@@ -286,6 +259,17 @@ describe('todoMiddleware', () => {
 
 function readTodoState(state: AgentState): TodoState {
   return state[TODO_STORE_KEY] as TodoState
+}
+
+function assistantResponse(
+  content: ConstructorParameters<typeof AssistantMessage>[0],
+  stopReason = 'end_turn',
+): ChatResponse {
+  return {
+    message: new AssistantMessage(content),
+    usage: { inputTokens: 1, outputTokens: 1 },
+    stopReason,
+  }
 }
 
 function getMessageText(content: unknown): string {

@@ -53,7 +53,7 @@ describe('OpenAIProvider protocol selection', () => {
     expect(url).toBe('https://api.openai.com/v1/responses')
     expect(init.method).toBe('POST')
     expect(init.body).toContain('"input"')
-    expect(response.content).toEqual([{ type: 'text', text: 'ok' }])
+    expect(response.message.content).toEqual([{ type: 'text', text: 'ok' }])
   })
 
   it('allows OpenAI-compatible providers to opt into Responses endpoint', async () => {

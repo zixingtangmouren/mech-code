@@ -11,9 +11,11 @@ export function registerChatCommand(program: Command): void {
       const React = await import('react')
       const { App } = await import('../ui/App.js')
       const { loadConfig, createProviderFromConfig } = await import('../config/loader.js')
-      const { resolveContextManagementConfig } = await import('../config/schema.js')
+      const { resolveContextCompactConfig, resolveToolResultConfig } =
+        await import('../config/schema.js')
       const { createAgent } = await import('@mech-code/core')
-      const { contextManagementMiddleware, todoMiddleware } = await import('@mech-code/middleware')
+      const { contextCompactMiddleware, todoMiddleware, toolResultMiddleware } =
+        await import('@mech-code/middleware')
       const { getBuiltinTools } = await import('@mech-code/tools')
       const { buildSystemPrompt } = await import('../prompts/system.js')
 
@@ -44,34 +46,40 @@ export function registerChatCommand(program: Command): void {
       const createConfiguredProvider = (name: string) => {
         if (!config.providers?.[name]) {
           console.error(
-            `错误: contextManagement 引用了不存在的 provider "${name}"。\n` +
+            `错误: contextCompact 引用了不存在的 provider "${name}"。\n` +
               `可用 providers: ${Object.keys(config.providers ?? {}).join(', ') || '(无)'}`,
           )
           process.exit(1)
         }
         return createProviderFromConfig(name, config.providers[name]!)
       }
-      const contextManagement = resolveContextManagementConfig(config)
-      if (contextManagement) {
-        const contextProvider = contextManagement.provider
-          ? createConfiguredProvider(contextManagement.provider)
-          : undefined
-        const summaryProvider = contextManagement.summaryProvider
-          ? createConfiguredProvider(contextManagement.summaryProvider)
+      const toolResult = resolveToolResultConfig(config)
+      if (toolResult) {
+        middleware.push(
+          toolResultMiddleware({
+            maxResultChars: toolResult.maxResultChars,
+            maxResultTokens: toolResult.maxResultTokens,
+            previewChars: toolResult.previewChars,
+            strategy: toolResult.strategy,
+            storage: toolResult.storage,
+            cleanup: toolResult.cleanup,
+          }),
+        )
+      }
+
+      const contextCompact = resolveContextCompactConfig(config)
+      if (contextCompact) {
+        const summaryProvider = contextCompact.summaryProvider
+          ? createConfiguredProvider(contextCompact.summaryProvider)
           : undefined
 
         middleware.push(
-          contextManagementMiddleware({
-            provider: contextProvider,
+          contextCompactMiddleware({
             summaryProvider,
-            modelContextWindow: contextManagement.modelContextWindow,
-            reservedOutputTokens: contextManagement.reservedOutputTokens,
-            trigger: contextManagement.trigger,
-            keep: contextManagement.keep,
-            summary: contextManagement.summary,
-            toolResults: contextManagement.toolResults,
-            cleanup: contextManagement.cleanup,
-            reactiveCompact: contextManagement.reactiveCompact,
+            modelContextWindow: contextCompact.modelContextWindow,
+            trigger: contextCompact.trigger,
+            summary: contextCompact.summary,
+            reactiveCompact: contextCompact.reactiveCompact,
           }),
         )
       }

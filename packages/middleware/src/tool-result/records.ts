@@ -2,14 +2,14 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { estimateTokens } from '@mech-code/core'
 import type { RunContext, ToolOutput } from '@mech-code/core'
-import { getContextManagementState } from './state.js'
+import { getToolResultState } from './state.js'
 import {
-  type ContextManagementState,
   type ResolvedToolResultBudgetOptions,
   type StoredToolResultRecord,
+  type ToolResultState,
   type ToolResultStorageOptions,
 } from './types.js'
-import { getVisibleEntries, isToolEntry } from './visibility.js'
+import { getToolMessages } from './visibility.js'
 
 export async function recordToolOutputBudget(
   ctx: RunContext,
@@ -18,52 +18,41 @@ export async function recordToolOutputBudget(
   output: ToolOutput,
   options: ResolvedToolResultBudgetOptions,
 ): Promise<ToolOutput> {
-  const messageContent = output.isError ? `Error: ${output.content}` : output.content
-  const originalEstimatedTokens = estimateTokens(messageContent)
-  if (!shouldBudgetToolContent(messageContent, originalEstimatedTokens, options)) {
-    return output
-  }
+  const content = output.isError ? `Error: ${output.content}` : output.content
+  const estimatedTokens = estimateTokens(content)
+  if (!shouldBudgetToolContent(content, estimatedTokens, options)) return output
 
-  const state = getContextManagementState(ctx.state)
-  const record = await createStoredToolResultRecord(
+  const state = getToolResultState(ctx.state)
+  state.records[toolCallId] = await createStoredToolResultRecord(
     ctx,
-    state,
     toolCallId,
     toolName,
-    messageContent,
-    originalEstimatedTokens,
+    content,
+    estimatedTokens,
     options,
   )
-  state.toolResults[toolCallId] = record
-
   return output
 }
 
 export async function recordUnmanagedToolMessageBudgets(
   ctx: RunContext,
-  state: ContextManagementState,
+  state: ToolResultState,
   options: ResolvedToolResultBudgetOptions,
 ): Promise<void> {
-  const unmanagedToolMessages = getVisibleEntries(ctx.state.messages)
-    .filter(isToolEntry)
-    .filter((entry) => state.toolResults[entry.message.toolCallId] === undefined)
+  for (const message of getToolMessages(ctx.state.messages)) {
+    if (state.records[message.toolCallId]) continue
 
-  for (const entry of unmanagedToolMessages) {
-    const originalEstimatedTokens = estimateTokens(entry.message.content)
-    if (!shouldBudgetToolContent(entry.message.content, originalEstimatedTokens, options)) {
-      continue
-    }
+    const estimatedTokens = estimateTokens(message.content)
+    if (!shouldBudgetToolContent(message.content, estimatedTokens, options)) continue
 
-    const record = await createStoredToolResultRecord(
+    state.records[message.toolCallId] = await createStoredToolResultRecord(
       ctx,
-      state,
-      entry.message.toolCallId,
-      entry.message.toolName,
-      entry.message.content,
-      originalEstimatedTokens,
+      message.toolCallId,
+      message.toolName,
+      message.content,
+      estimatedTokens,
       options,
     )
-    state.toolResults[entry.message.toolCallId] = record
   }
 }
 
@@ -77,25 +66,23 @@ function shouldBudgetToolContent(
 
 async function createStoredToolResultRecord(
   ctx: RunContext,
-  state: ContextManagementState,
   toolCallId: string,
   toolName: string,
   content: string,
   originalEstimatedTokens: number,
   options: ResolvedToolResultBudgetOptions,
 ): Promise<StoredToolResultRecord> {
-  const preview = content.slice(0, options.previewChars)
   const record: StoredToolResultRecord = {
     toolCallId,
     toolName,
     originalChars: content.length,
     originalEstimatedTokens,
-    preview,
+    preview: content.slice(0, options.previewChars),
     createdAt: Date.now(),
   }
 
   if (options.strategy === 'preview_and_store') {
-    record.storage = await storeToolResult(ctx, state, toolCallId, content, options.storage)
+    record.storage = await storeToolResult(ctx, toolCallId, content, options.storage)
   }
 
   return record
@@ -103,7 +90,6 @@ async function createStoredToolResultRecord(
 
 async function storeToolResult(
   ctx: RunContext,
-  state: ContextManagementState,
   toolCallId: string,
   content: string,
   storage: ToolResultStorageOptions,
@@ -117,7 +103,6 @@ async function storeToolResult(
     await writeFile(path, content, 'utf8')
     return { type: 'file', path }
   } catch {
-    state.failures.toolStorageConsecutiveFailures++
     return { type: 'state', content }
   }
 }
@@ -131,11 +116,11 @@ export function renderToolPreview(record: StoredToolResultRecord): string {
     record.storage?.type === 'file'
       ? `\n\nFull result: ${record.storage.path}`
       : record.storage?.type === 'state'
-        ? '\n\nFull result is stored in state.contextManagement.toolResults.'
+        ? '\n\nFull result is stored in state.toolResult.records.'
         : ''
 
   return [
-    'Tool result is large and has been shortened by context management.',
+    'Tool result is large and has been shortened by tool result middleware.',
     '',
     `Original chars: ${record.originalChars}`,
     `Estimated tokens: ${record.originalEstimatedTokens}`,

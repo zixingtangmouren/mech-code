@@ -1,5 +1,5 @@
-import type { AgentEvent, AssistantContentBlock, ToolDefinition, Usage } from '@mech-code/shared'
-import type { AgentMessage } from '../message/message.js'
+import type { AgentEvent, ToolDefinition, Usage } from '@mech-code/shared'
+import type { AgentMessage, AssistantMessage } from '../message/message.js'
 
 // === 模型生成参数 ===
 
@@ -36,7 +36,7 @@ export interface ChatParams {
 // === 聊天响应（非流式，Provider 输出）===
 
 export interface ChatResponse {
-  content: AssistantContentBlock[]
+  message: AssistantMessage
   usage: Usage
   stopReason: string
 }

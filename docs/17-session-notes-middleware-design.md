@@ -22,22 +22,22 @@
 - 不清理 tool result。
 - 不承担跨项目长期记忆。
 
-## 2. 与 Context Management Middleware 的边界
+## 2. 与 Context Compact Middleware 的边界
 
-`sessionNotesMiddleware` 是“旁路笔记层”，`contextManagementMiddleware` 是“上下文预算层”。
+`sessionNotesMiddleware` 是“旁路笔记层”，`contextCompactMiddleware` 是“上下文压缩层”。
 
-| 能力                         | `sessionNotesMiddleware` | `contextManagementMiddleware` |
-| ---------------------------- | ------------------------ | ----------------------------- |
-| 旁路 Agent 定期更新笔记      | 是                       | 否                            |
-| 写 `.mech/session-memory.md` | 是                       | 否                            |
-| 暴露 SummarySource           | 是                       | 消费                          |
-| 主动 full compact            | 否                       | 是                            |
-| API overflow 兜底 compact    | 否                       | 是                            |
-| 工具大结果 preview/store     | 否                       | 是                            |
-| 定期清理旧 tool result       | 否                       | 是                            |
-| 修改 `state.messages` 可见性 | 否                       | 是                            |
+| 能力                         | `sessionNotesMiddleware` | `contextCompactMiddleware` |
+| ---------------------------- | ------------------------ | -------------------------- |
+| 旁路 Agent 定期更新笔记      | 是                       | 否                         |
+| 写 `.mech/session-memory.md` | 是                       | 否                         |
+| 暴露 SummarySource           | 是                       | 消费                       |
+| 主动 full compact            | 否                       | 是                         |
+| API overflow 兜底 compact    | 否                       | 是                         |
+| 工具大结果 preview/store     | 否                       | 否                         |
+| 定期清理旧 tool result       | 否                       | 否                         |
+| 修改 `state.messages` 可见性 | 否                       | 是                         |
 
-旁路笔记的价值是给 compact 提供更稳定、更便宜的素材，但它不应该和 compact 触发、cutoff、安全边界等逻辑耦合。
+旁路笔记的价值是给 compact 提供更稳定、更便宜的素材，但它不应该和 compact 触发、压缩范围、可见性标记等逻辑耦合。
 
 ## 3. Middleware API 草案
 
@@ -135,7 +135,8 @@ interface SessionNotesState {
 
 该中间件不写：
 
-- `state.contextManagement`
+- `state.contextCompact`
+- `state.toolResult`
 - `_compressed`
 - `_meta.kind = 'context_summary'`
 - tool result storage
@@ -260,7 +261,7 @@ flowchart TD
 
 ## 8. SummarySource 输出接口
 
-`sessionNotesMiddleware` 暴露 `source`，供 `contextManagementMiddleware` 可选读取。
+`sessionNotesMiddleware` 暴露 `source`，供 `contextCompactMiddleware` 可选读取。
 
 ```ts
 interface SummarySource {
@@ -290,11 +291,11 @@ fresh 判断建议：
 
 - `load(ctx)` 只读取 note，不启动更新。
 - 如果 note 不存在或明显过期，返回 `null` 或 `fresh: false`。
-- `SummarySource` 不决定 compact cutoff。
+- `SummarySource` 不决定 compact 压缩范围。
 - `SummarySource` 不标记 `_compressed`。
 - `SummarySource` 不修改 `state.messages`。
 
-## 9. 与 Context Management 的组合
+## 9. 与 Context Compact 的组合
 
 推荐组合：
 
@@ -304,7 +305,7 @@ const sessionNotes = sessionNotesMiddleware({
   path: '.mech/session-memory.md',
 })
 
-const contextManagement = contextManagementMiddleware({
+const contextCompact = contextCompactMiddleware({
   summaryProvider,
   summary: {
     sources: [sessionNotes.source],
@@ -318,11 +319,11 @@ const contextManagement = contextManagementMiddleware({
 ```mermaid
 flowchart TD
   A["sessionNotesMiddleware 持续维护 note"] --> B["暴露 SummarySource"]
-  C["contextManagement beforeModel 触发 compact"] --> D["调用 SummarySource.load(ctx)"]
+  C["contextCompact wrapModelCall 触发 compact"] --> D["调用 SummarySource.load(ctx)"]
   D --> E{"source fresh?"}
   E -- 是 --> F["用 note content 作为 compact summary 素材"]
   E -- 否 --> G["回退 summaryProvider 全量摘要"]
-  F --> H["context manager 决定 cutoff 和 _compressed"]
+  F --> H["context compact 写入 compressed metadata"]
   G --> H
   H --> I["写入 context_summary message"]
 ```
@@ -330,9 +331,9 @@ flowchart TD
 关键边界：
 
 - `sessionNotesMiddleware` 不知道何时 compact。
-- `contextManagementMiddleware` 不知道如何更新 note。
+- `contextCompactMiddleware` 不知道如何更新 note。
 - 两者通过 `SummarySource` 解耦。
-- 没有 session notes 时，context management 仍然完整可用。
+- 没有 session notes 时，context compact 仍然完整可用。
 - session notes 单独启用时，只产生笔记，不改变模型上下文窗口。
 
 ## 10. 失败处理
@@ -358,4 +359,4 @@ flowchart TD
 - session note 写入成功后更新 `coveredUntilMessageId` 和 `estimatedTokens`。
 - 失败不会中断主 Agent。
 - `SummarySource.load(ctx)` 能读取 fresh note。
-- `contextManagementMiddleware` 可以消费 source，但两者没有硬依赖。
+- `contextCompactMiddleware` 可以消费 source，但两者没有硬依赖。
