@@ -121,23 +121,23 @@ describe('toolResultMiddleware', () => {
     expect(JSON.stringify(provider.streamCalls[0]?.messages)).not.toContain(rawToolResult)
   })
 
-  it('cleans old tool results in the provider projection without mutating state', async () => {
+  it('cleans expired tool results in the provider projection without mutating state', async () => {
     const oldResult = 'old-result-that-business-must-persist'
     const recentResult = 'recent-result'
     const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
     const state = createAgentState()
     state.messages.push(
-      new ToolMessage('old_call', 'old_tool', oldResult),
-      new ToolMessage('recent_call', 'recent_tool', recentResult),
+      new ToolMessage('old_call', 'old_tool', oldResult, { metadata: { createdAt: 1 } }),
+      new ToolMessage('recent_call', 'recent_tool', recentResult, {
+        metadata: { createdAt: Date.now() },
+      }),
     )
     const agent = createAgent({
       provider,
       middleware: [
         toolResultMiddleware({
           cleanup: {
-            enabled: true,
-            trigger: { turns: 1 },
-            keepRecentToolResults: 1,
+            maxAgeMs: 1_000,
             replacementText: 'CLEARED_FOR_CONTEXT',
           },
         }),
@@ -157,6 +157,36 @@ describe('toolResultMiddleware', () => {
     expect(providerPayload).toContain(recentResult)
     const toolResult = state[TOOL_RESULT_STATE_KEY] as ToolResultState
     expect(toolResult.records.old_call?.cleared).toBe(true)
+    expect(toolResult.records.recent_call?.cleared).toBeUndefined()
+  })
+
+  it('does not clean tool results when maxAgeMs is not configured', async () => {
+    const oldResult = 'old-result'
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
+    const state = createAgentState()
+    state.messages.push(
+      new ToolMessage('old_call', 'old_tool', oldResult, { metadata: { createdAt: 1 } }),
+    )
+    const agent = createAgent({
+      provider,
+      middleware: [
+        toolResultMiddleware({
+          cleanup: {
+            replacementText: 'CLEARED_FOR_CONTEXT',
+          },
+        }),
+      ],
+    })
+
+    for await (const _event of agent.run({ state })) {
+      // consume stream
+    }
+
+    const providerPayload = JSON.stringify(provider.streamCalls[0]?.messages)
+    expect(providerPayload).toContain(oldResult)
+    expect(providerPayload).not.toContain('CLEARED_FOR_CONTEXT')
+    const toolResult = state[TOOL_RESULT_STATE_KEY] as ToolResultState
+    expect(toolResult.records.old_call?.cleared).toBeUndefined()
   })
 })
 

@@ -44,6 +44,11 @@ interface ToolResultMiddlewareOptions {
   storage?: { type: 'state' } | { type: 'file'; dir: string }
   cleanup?: ToolResultCleanupOptions
 }
+
+interface ToolResultCleanupOptions {
+  maxAgeMs?: number
+  replacementText?: string
+}
 ```
 
 状态：
@@ -53,7 +58,6 @@ interface ToolResultState {
   records: Record<string, StoredToolResultRecord>
   cleanup: {
     lastCleanupAt?: number
-    lastCleanupTurn?: number
     clearedToolResultCount?: number
   }
 }
@@ -63,7 +67,7 @@ interface ToolResultState {
 
 - `wrapToolCall` 在工具执行后记录超大结果预算信息，但不修改 `ToolOutput.content`。
 - `beforeModel` 扫描已有 tool message，兜底记录 restored state 中尚未登记的超大工具结果。
-- `beforeModel` 按 cleanup trigger 标记旧工具结果为 cleared。
+- `beforeModel` 按 tool message 的 `metadata.createdAt` 和 `cleanup.maxAgeMs` 标记超龄工具结果为 cleared。
 - `wrapModelCall` 只改写本次 `request.params.messages`，把超大工具结果投影为 preview，把 cleared 工具结果投影为 replacement text。
 - `state.messages` 始终保留原始工具结果，便于审计和 checkpoint。
 
@@ -149,9 +153,7 @@ CLI 使用两个顶层配置块：
     "strategy": "preview_and_store",
     "storage": { "type": "state" },
     "cleanup": {
-      "enabled": true,
-      "trigger": { "turns": 10 },
-      "keepRecentToolResults": 10
+      "maxAgeMs": 3600000
     }
   },
   "contextCompact": {

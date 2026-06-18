@@ -26,7 +26,7 @@ export abstract class BaseMessage<TRole extends MessageRole, TContent> {
   protected constructor(role: TRole, content: TContent, options: MessageOptions = {}) {
     this.role = role
     this.content = content
-    this.metadata = { ...(options.metadata ?? {}) }
+    this.metadata = { createdAt: Date.now(), ...(options.metadata ?? {}) }
   }
 
   toJSON(): SerializedAgentMessage {

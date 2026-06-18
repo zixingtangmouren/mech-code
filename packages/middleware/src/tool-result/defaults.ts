@@ -25,9 +25,7 @@ export function resolveCleanupOptions(
   options?: ToolResultCleanupOptions,
 ): ResolvedToolResultCleanupOptions {
   return {
-    enabled: options?.enabled ?? false,
-    trigger: options?.trigger ?? {},
-    keepRecentToolResults: options?.keepRecentToolResults ?? 10,
+    maxAgeMs: options?.maxAgeMs,
     replacementText:
       options?.replacementText ??
       'Tool result was cleared by tool result middleware. The original result is no longer visible.',

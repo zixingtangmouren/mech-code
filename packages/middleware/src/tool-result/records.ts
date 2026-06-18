@@ -11,6 +11,15 @@ import {
 } from './types.js'
 import { getToolMessages } from './visibility.js'
 
+/**
+ * 记录大型返回结果的工具内容
+ * @param ctx
+ * @param toolCallId
+ * @param toolName
+ * @param output
+ * @param options
+ * @returns
+ */
 export async function recordToolOutputBudget(
   ctx: RunContext,
   toolCallId: string,
@@ -34,6 +43,13 @@ export async function recordToolOutputBudget(
   return output
 }
 
+/**
+ * 记录未管理的工具消息预算
+ * 这适用于在模型调用之前已经存在的工具消息，确保它们也被考虑在内。
+ * @param ctx
+ * @param state
+ * @param options
+ */
 export async function recordUnmanagedToolMessageBudgets(
   ctx: RunContext,
   state: ToolResultState,

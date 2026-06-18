@@ -62,9 +62,7 @@ mech chat -m claude-opus-4-5
     "strategy": "preview_and_store",
     "storage": { "type": "state" },
     "cleanup": {
-      "enabled": true,
-      "trigger": { "turns": 10 },
-      "keepRecentToolResults": 10
+      "maxAgeMs": 3600000
     }
   },
   "contextCompact": {

@@ -4,32 +4,43 @@ import { AssistantMessage, SystemMessage, ToolMessage, UserMessage } from '../me
 import { createAgentState, deserializeAgentState, serializeAgentState } from '../../agent/state.js'
 
 describe('message classes', () => {
-  it('creates class messages with metadata', () => {
+  it('creates class messages with createdAt metadata', () => {
+    const before = Date.now()
     const user = new UserMessage('hello', { metadata: { source: 'test' } })
     const assistant = new AssistantMessage([{ type: 'text', text: 'ok' }])
     const tool = new ToolMessage('call_1', 'read_file', 'result')
+    const after = Date.now()
 
     expect(user.role).toBe('user')
-    expect(user.metadata).toEqual({ source: 'test' })
-    expect(assistant.metadata).toEqual({})
+    expect(user.metadata.source).toBe('test')
+    expect(user.metadata.createdAt).toBeGreaterThanOrEqual(before)
+    expect(user.metadata.createdAt).toBeLessThanOrEqual(after)
+    expect(assistant.metadata.createdAt).toBeGreaterThanOrEqual(before)
+    expect(tool.metadata.createdAt).toBeGreaterThanOrEqual(before)
     expect(tool.toolCallId).toBe('call_1')
     expect(tool.toolName).toBe('read_file')
   })
 
+  it('preserves provided createdAt metadata', () => {
+    const user = new UserMessage('hello', { metadata: { createdAt: 123, source: 'test' } })
+
+    expect(user.metadata).toEqual({ createdAt: 123, source: 'test' })
+  })
+
   it('serializes state to plain json and restores message classes', () => {
     const state = createAgentState()
-    state.messages.push(new UserMessage('hello', { metadata: { kind: 'test' } }))
+    state.messages.push(new UserMessage('hello', { metadata: { createdAt: 123, kind: 'test' } }))
 
     const serialized = serializeAgentState(state)
     expect(serialized.messages[0]).toEqual({
       role: 'user',
       content: 'hello',
-      metadata: { kind: 'test' },
+      metadata: { createdAt: 123, kind: 'test' },
     })
 
     const restored = deserializeAgentState(serialized)
     expect(restored.messages[0]).toBeInstanceOf(UserMessage)
-    expect(restored.messages[0]?.metadata).toEqual({ kind: 'test' })
+    expect(restored.messages[0]?.metadata).toEqual({ createdAt: 123, kind: 'test' })
   })
 })
 

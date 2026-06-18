@@ -15,13 +15,7 @@ export interface ToolResultBudgetOptions {
 export type ToolResultStorageOptions = { type: 'state' } | { type: 'file'; dir: string }
 
 export interface ToolResultCleanupOptions {
-  enabled?: boolean
-  trigger?: {
-    idleMinutes?: number
-    turns?: number
-    tokens?: number
-  }
-  keepRecentToolResults?: number
+  maxAgeMs?: number
   replacementText?: string
 }
 
@@ -29,7 +23,6 @@ export interface ToolResultState {
   records: Record<string, StoredToolResultRecord>
   cleanup: {
     lastCleanupAt?: number
-    lastCleanupTurn?: number
     clearedToolResultCount?: number
   }
 }
@@ -46,4 +39,6 @@ export interface StoredToolResultRecord {
 }
 
 export type ResolvedToolResultBudgetOptions = Required<ToolResultBudgetOptions>
-export type ResolvedToolResultCleanupOptions = Required<ToolResultCleanupOptions>
+export type ResolvedToolResultCleanupOptions = ToolResultCleanupOptions & {
+  replacementText: string
+}

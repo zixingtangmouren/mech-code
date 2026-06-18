@@ -43,12 +43,12 @@ describe('resolveToolResultConfig', () => {
       resolveToolResultConfig({
         toolResult: {
           maxResultChars: 100,
-          cleanup: { enabled: true, trigger: { turns: 3 } },
+          cleanup: { maxAgeMs: 3_600_000 },
         },
       }),
     ).toEqual({
       maxResultChars: 100,
-      cleanup: { enabled: true, trigger: { turns: 3 } },
+      cleanup: { maxAgeMs: 3_600_000 },
     })
   })
 
