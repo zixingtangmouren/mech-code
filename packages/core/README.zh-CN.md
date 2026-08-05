@@ -2,23 +2,28 @@
 
 [English](./README.md)
 
-`@mech-code/core` 是 Mech-Code 的 SDK 核心包，包含 Agent 循环引擎、多模型 Provider、工具协议、中间件管道等全部运行时能力。它不依赖终端/UI，可运行于 Node.js、Bun 等任意 JS 运行时。
+`@mech-code/core` 是 Mech-Code 的无 UI Agent 运行时。你可以用它构建终端智能体、后台任务、Web 服务或自己的对话界面，并通过统一模型管理 Provider、工具、会话状态、流式事件、中间件和人工审批。
+
+该包仅提供 ESM 版本，需要运行环境支持 `fetch`、`AbortController` 和 `structuredClone`。下文示例使用 Node.js 和 TypeScript。
 
 ## 安装
 
 ```bash
-npm install @mech-code/core
+pnpm add @mech-code/core zod
 # 或
-pnpm add @mech-code/core
+npm install @mech-code/core zod
 ```
 
----
+只有使用推荐的类型安全工具定义 API 时才需要 Zod。你也可以直接用 JSON Schema 定义工具。
 
 ## 快速开始
 
+下面的示例连接一个兼容 OpenAI 协议的端点，为 Agent 提供一个只读工具，并流式输出模型回复：
+
 ```ts
+import { readFile } from 'node:fs/promises'
 import {
-  AnthropicProvider,
+  OpenAICompatibleProvider,
   UserMessage,
   createAgent,
   createAgentState,
@@ -26,145 +31,192 @@ import {
 } from '@mech-code/core'
 import { z } from 'zod'
 
-// 1. 定义工具
 const readFileTool = defineTool({
   name: 'read_file',
-  description: '读取指定路径的文件内容',
+  description: '读取 UTF-8 文本文件',
   schema: z.object({ path: z.string().min(1) }),
   flags: { readonly: true, parallelSafe: true },
   async execute({ path }) {
-    const content = await fs.promises.readFile(path, 'utf-8')
-    return { content }
+    return { content: await readFile(path, 'utf8') }
   },
 })
 
-// 2. 创建 Provider
-const provider = new AnthropicProvider({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-  model: 'claude-sonnet-4-20250514',
+const provider = new OpenAICompatibleProvider({
+  apiKey: process.env.LLM_API_KEY ?? '',
+  baseUrl: process.env.LLM_BASE_URL ?? 'http://localhost:11434/v1',
+  model: process.env.LLM_MODEL ?? 'qwen2.5-coder:7b',
 })
 
-// 3. 创建 Agent
 const agent = createAgent({
   provider,
   tools: [readFileTool],
-  system: 'You are a helpful coding assistant.',
+  system: '你是一名回答简洁的编程助手。',
 })
 
-// 4. 创建会话状态（由调用方持有，跨轮次持续累积）
 const state = createAgentState()
-state.messages.push(new UserMessage('Hello!'))
+state.messages.push(new UserMessage('总结 package.json'))
 
-// 5. 流式运行
-for await (const event of agent.run({ state })) {
+for await (const event of agent.run({ state, props: { cwd: process.cwd() } })) {
   if (event.type === 'text_delta') process.stdout.write(event.delta)
 }
-// 此时 state.messages 已包含完整的对话历史
-
-// 或一次性获取最终结果
-const result = await agent.complete({ state })
-console.log(result.text) // result: { text, stopReason, usage, turnsUsed }
 ```
 
----
+`agent.run()` 会直接修改 `state`。运行结束后，其中包含 Assistant 消息、工具结果和累计 token 用量。下一轮对话继续复用这个对象即可。
 
-## Provider
+## Agent 如何运行
 
-Provider 负责与 LLM 厂商 API 通信，将统一的内部消息格式序列化为厂商请求体，并将响应归一化为标准格式。
+一个 Agent 由一个 Provider、系统提示词、一组工具、可选中间件和循环轮数上限组成：
 
-### 内置 Provider
+```ts
+const agent = createAgent({
+  provider,
+  tools: [readFileTool],
+  middleware: [],
+  system: '你是一名编程助手。',
+  maxTurns: 20,
+})
+```
 
-| Provider                   | 说明                                            |
-| -------------------------- | ----------------------------------------------- |
-| `AnthropicProvider`        | Anthropic 原生 API（Claude）                    |
-| `OpenAIProvider`           | OpenAI 原生 API                                 |
-| `OpenAICompatibleProvider` | 通用兼容协议，覆盖 DeepSeek、Ollama 等 90% 厂商 |
+会话状态由调用方持有。每次运行前加入一条新的 `UserMessage`，并持续传入同一个 state，就能延续对话：
 
-### 配置（`ProviderConfig`）
+```ts
+const state = createAgentState()
+
+state.messages.push(new UserMessage('列出主要模块。'))
+await agent.complete({ state })
+
+state.messages.push(new UserMessage('哪个模块负责执行工具？'))
+const result = await agent.complete({
+  state,
+  props: { cwd: process.cwd(), requestId: 'req-42' },
+})
+
+console.log(result.text)
+console.log(result.stopReason)
+console.log(result.usage)
+```
+
+`props` 用于向中间件和工具传递只读、仅在本次 run 中有效的数据，不会保存到 checkpoint。
+
+根据输出消费方式选择执行方法：
+
+| 方法                     | 适用场景                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| `agent.run(params)`      | 需要 `AsyncIterable<AgentEvent>` 来实时渲染文本、展示工具进度或获取状态快照。 |
+| `agent.complete(params)` | 只需要最终 `RunResult`：文本、停止原因、本次用量、运行轮数和 checkpoint。     |
+| `agent.resume(params)`   | 根据人工审批 checkpoint 继续执行尚未完成的工具调用。                          |
+
+默认最多执行 20 个模型轮次。可以在创建 Agent 时通过 `maxTurns` 修改，也可以在单次运行中通过 `config.maxTurns` 覆盖。
+
+### 取消运行
+
+传入 `AbortSignal` 即可进行协作式取消：
+
+```ts
+import { ProviderError } from '@mech-code/core'
+
+const controller = new AbortController()
+
+const running = agent.complete({
+  state,
+  config: { signal: controller.signal },
+})
+
+controller.abort('user_cancelled')
+
+try {
+  await running
+} catch (error) {
+  if (!(error instanceof ProviderError) || error.code !== 'aborted') throw error
+}
+```
+
+Provider 的底层 `StreamResult` 也提供 `abort()`。在 Agent 层建议传入 run signal，使同一个取消信号能够传递给 Provider、中间件和工具。
+
+### 运行时调整与派生
+
+```ts
+agent.addTool(readFileTool)
+agent.removeTool('read_file')
+agent.use(loggingMiddleware)
+
+const reviewAgent = agent.fork({
+  tools: [readFileTool],
+  system: '只审查代码，不修改文件。',
+  maxTurns: 5,
+})
+```
+
+`fork()` 会复制当前 Agent 配置，并应用传入的覆盖项。会话状态仍需单独传入。
+
+## 选择 Provider
+
+所有内置 Provider 都实现相同的 `LLMProvider` 接口，并统一消息、工具调用、流式事件、用量和错误格式。
+
+| Provider                   | 适用场景                                                |
+| -------------------------- | ------------------------------------------------------- |
+| `AnthropicProvider`        | Anthropic 原生 Messages API。                           |
+| `OpenAIProvider`           | OpenAI Chat Completions 或 Responses API。              |
+| `OpenAICompatibleProvider` | DeepSeek、Ollama、vLLM 等第三方或本地 OpenAI 兼容端点。 |
+
+```ts
+import { AnthropicProvider, OpenAICompatibleProvider, OpenAIProvider } from '@mech-code/core'
+
+const anthropic = new AnthropicProvider({
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+  model: process.env.ANTHROPIC_MODEL!,
+})
+
+const openai = new OpenAIProvider({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: process.env.OPENAI_MODEL!,
+  protocol: 'responses',
+})
+
+const local = new OpenAICompatibleProvider({
+  apiKey: 'unused',
+  baseUrl: 'http://localhost:11434/v1',
+  model: 'qwen2.5-coder:7b',
+})
+```
+
+Provider 构造函数接受以下配置：
 
 ```ts
 interface ProviderConfig {
   apiKey: string
   model: string
-  baseUrl?: string // 自定义端点（代理、本地模型等）
-  headers?: Record<string, string> // 附加请求头
-  defaultParams?: ModelParams // 默认生成参数
-}
-```
-
-### 生成参数（`ModelParams`）
-
-```ts
-interface ModelParams {
-  temperature?: number
-  maxTokens?: number
-  topP?: number
-  stopSequences?: string[]
-  extra?: Record<string, unknown> // 厂商特定参数逃生口
-}
-```
-
-`defaultParams` 在构造 Provider 时设置，可被单次调用的 `CallOptions.modelParams` 覆盖（浅合并）。
-
-### 非流式调用
-
-```ts
-const response = await provider.chat(params, { modelParams: { temperature: 0.7 } })
-// response: { content, usage, stopReason }
-```
-
-### 流式调用（`StreamResult`）
-
-`provider.stream()` 返回一个双通道对象，同时提供逐事件消费和最终结果：
-
-```ts
-const { stream, final, abort } = provider.stream(params)
-
-// 消费事件流（用于 UI 实时渲染）
-for await (const event of stream) {
-  process.stdout.write(event.type === 'text_delta' ? event.delta : '')
-}
-
-// 等待完整响应（Agent Loop 使用）
-const { content, usage, stopReason } = await final
-```
-
-### 错误处理（`ProviderError`）
-
-所有 Provider 将厂商错误统一翻译为 `ProviderError`：
-
-```ts
-import { ProviderError } from '@mech-code/core'
-
-try {
-  await provider.chat(params)
-} catch (err) {
-  if (err instanceof ProviderError) {
-    console.log(err.code) // 'auth_failed' | 'rate_limited' | 'server_error' | ...
-    console.log(err.retryable) // 是否可重试
-    console.log(err.provider) // provider 名称
+  baseUrl?: string
+  protocol?: 'chat' | 'responses'
+  headers?: Record<string, string>
+  defaultParams?: {
+    temperature?: number
+    maxTokens?: number
+    topP?: number
+    stopSequences?: string[]
+    extra?: Record<string, unknown>
   }
 }
 ```
 
-| 错误码             | 说明               | 可重试 |
-| ------------------ | ------------------ | ------ |
-| `auth_failed`      | 401 / 403 鉴权失败 | 否     |
-| `rate_limited`     | 429 限流           | 是     |
-| `context_too_long` | 上下文超限         | 否     |
-| `model_not_found`  | 模型不存在         | 否     |
-| `server_error`     | 5xx 服务端错误     | 是     |
-| `network_error`    | 网络层异常         | 是     |
-| `invalid_request`  | 4xx 参数错误       | 否     |
-| `aborted`          | 用户主动中止       | 否     |
+`protocol` 适用于 OpenAI 风格的 Provider，默认为 `chat`。代理或自定义端点通过 `baseUrl` 设置。直接调用 `provider.chat()` 或 `provider.stream()` 时，单次调用的 `modelParams` 会浅合并覆盖 `defaultParams`。
 
----
+```ts
+const response = await openai.chat(
+  { messages: [new UserMessage('打个招呼。')] },
+  { modelParams: { temperature: 0.2, maxTokens: 100 } },
+)
 
-## 工具系统
+const { stream, final, abort } = openai.stream({
+  messages: [new UserMessage('解释这个 API。')],
+})
+```
 
-### 定义工具（`defineTool`）
+`stream` 生成统一事件，`final` 解析为完整的 `ChatResponse`，`abort()` 用于取消请求。
 
-推荐使用 **Zod schema 方式**，可获得完整类型安全和自动输入校验：
+## 定义工具
+
+工具由名称、描述、输入 schema、执行函数和两个调度/策略标记组成。使用 Zod 可以获得自动推导的输入类型和运行时校验：
 
 ```ts
 import { defineTool } from '@mech-code/core'
@@ -172,324 +224,260 @@ import { z } from 'zod'
 
 const searchTool = defineTool({
   name: 'search',
-  description: '在代码库中搜索文本',
+  description: '搜索项目中的文本文件',
   schema: z.object({
-    query: z.string().min(1, '搜索词不能为空'),
-    path: z.string().optional(),
+    query: z.string().min(1),
+    path: z.string().default('.'),
   }),
   flags: {
-    readonly: true, // 无副作用，权限中间件可自动放行
-    parallelSafe: true, // 可并发执行
+    readonly: true,
+    parallelSafe: true,
   },
-  // input 类型由 schema 自动推导，无需手动转型
-  async execute({ query, path }, ctx) {
-    // ctx: { cwd, signal, metadata }
-    return { content: `搜索结果: ...` }
-  },
-  // 可选：额外的业务约束校验（在 Zod 校验通过后执行）
   validateInput({ query }) {
-    if (query.length > 200) return { valid: false, error: '搜索词过长' }
-    return { valid: true }
+    return query.length <= 200 ? { valid: true } : { valid: false, error: '搜索内容过长' }
+  },
+  async execute({ query, path }, context) {
+    return {
+      content: `在 ${path} 中搜索 ${query}`,
+      metadata: { requestId: context.props.requestId },
+    }
   },
 })
 ```
 
-也可使用**原始 JSON Schema 方式**（适合接入 MCP 工具或不依赖 Zod 的场景）：
+- `readonly` 表示工具是否有副作用。Core 不会自行执行权限策略，中间件可以根据这个标记判断是否需要审批。
+- `parallelSafe` 允许 Agent Loop 并发执行对该工具的多个调用。未设置该标记的调用会串行执行。
+- `content` 会返回给模型。可选的 `metadata` 用于携带宿主侧结构化数据，不会作为普通文本发送给模型。
+
+已有 JSON Schema 时，可以使用原始定义方式：
 
 ```ts
-const tool = defineTool({
-  name: 'read_file',
-  description: '读取文件',
-  inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+const rawTool = defineTool({
+  name: 'lookup',
+  description: '查询一个值',
+  inputSchema: {
+    type: 'object',
+    properties: { key: { type: 'string' } },
+    required: ['key'],
+    additionalProperties: false,
+  },
   flags: { readonly: true, parallelSafe: true },
-  async execute(input) {
-    const path = input['path'] as string // 需要手动转型
-    return { content: '...' }
+  execute(input) {
+    return { content: String(input.key) }
   },
 })
 ```
 
-### 工具标记（`ToolFlags`）
-
-```ts
-interface ToolFlags {
-  readonly: boolean // true = 无副作用，权限中间件可自动放行，跳过用户确认
-  parallelSafe: boolean // true = Loop 调度器可将多个 tool_use 并发执行
-}
-```
+输入校验失败时，Core 会生成模型可读取的错误工具结果。工具执行期间抛出的异常仍属于执行错误。
 
 ### 工具注册表
 
+包中还提供了进程级工具注册表：
+
 ```ts
-import { registerTool, getTool, getAllTools, getToolDefinitions, clearTools } from '@mech-code/core'
+import { getAllTools, getTool, registerTool } from '@mech-code/core'
 
 registerTool(searchTool)
+getTool('search')
 
-getTool('search') // 按名称获取
-getAllTools() // 获取所有已注册工具
-getToolDefinitions() // 获取发送给 LLM 的精简定义列表（name + description + inputSchema）
-clearTools() // 清空注册表（测试时使用）
+const agent = createAgent({ provider, tools: getAllTools() })
 ```
 
----
+注册工具不会自动修改已有 Agent。需要把注册表中的工具传给 `createAgent()`，或通过 `agent.addTool()` 添加。
 
-## 中间件
+## 添加中间件
 
-中间件以可插拔方式扩展 Agent 行为，处理重试、限流、权限、日志等横切逻辑，不侵入核心代码。支持两种模式：
+中间件用于封装横切逻辑，无需修改 Agent Loop。它提供两种互补模式：
 
-- **Hook 模式** —— 读写 Context 状态（日志、上下文压缩、token 计量）
-- **Wrap 模式** —— 包裹核心操作（重试、缓存、熔断、权限拦截）
+- 生命周期 Hook（`beforeAgent`、`afterAgent`、`beforeModel`、`afterModel`）用于观察或更新一次 run 或模型轮次前后的状态。
+- 调用包装器（`wrapModelCall`、`wrapToolCall`）拦截一次真实的 Provider 或工具调用，适合重试、缓存、降级、权限和结果处理。
 
-职责边界：**Hook 处理生命周期状态，Wrap 处理单次真实调用**。如果要调整最终传给模型 API 或工具实现的入参，使用 `wrapModelCall` / `wrapToolCall`。
-
-### 中间件接口
+大多数场景可以使用简洁的 `createMiddleware()`。默认状态会经过克隆后合并到调用方的 `AgentState`，且不会覆盖已有字段：
 
 ```ts
-interface AgentMiddleware {
-  name: string
-  /** 默认 AgentState 扩展字段，合并到 AgentState 顶层 */
-  state?: Record<string, unknown>
+import { createMiddleware } from '@mech-code/core'
 
-  // === Hook 模式：状态观察与修改 ===
-  beforeAgent?(ctx: RunContext): Awaitable<void> // run 开始，做初始化
-  afterAgent?(ctx: RunContext): Awaitable<void> // run 结束，类似 finally
-  beforeModel?(ctx: RunContext): Awaitable<void> // 整理 state.messages，维护生命周期状态
-  afterModel?(ctx: RunContext): Awaitable<void> // 观察模型输出，更新统计
-
-  // === Wrap 模式：拦截单次真实调用 ===
-  wrapModelCall?(request: ModelCallRequest, handler: ModelCallHandler): Awaitable<StreamResult>
-  wrapToolCall?(request: ToolCallRequest, handler: ToolCallHandler): Awaitable<ToolOutput>
-}
-```
-
-对于有状态的中间件，推荐继承 `Middleware` 基类：
-
-```ts
-import { Middleware } from '@mech-code/core'
-
-class TokenCounterMiddleware extends Middleware {
-  name = 'token-counter'
-
-  // 默认 state 扩展字段：run 开始时合并到 AgentState
-  state = { totalInputTokens: 0, totalOutputTokens: 0 }
-
-  // 私有状态：仅自身可见
-  private threshold = 100_000
-
-  afterModel(ctx: RunContext) {
-    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
-    ctx.state.totalInputTokens = (ctx.state.totalInputTokens as number) + inputTokens
-    ctx.state.totalOutputTokens = (ctx.state.totalOutputTokens as number) + outputTokens
-    if ((ctx.state.totalInputTokens as number) > this.threshold) {
-      console.warn('累计 input token 已超过阈值')
+const loggingMiddleware = createMiddleware({
+  name: 'logging',
+  state: { modelCalls: 0 },
+  beforeModel(ctx) {
+    ctx.state.modelCalls = Number(ctx.state.modelCalls) + 1
+    ctx.runtime.notifyStateChanged('model_call_counted', ['modelCalls'])
+    console.log('turn', ctx.loopState.turnIndex)
+  },
+  async wrapToolCall(request, handler) {
+    const startedAt = Date.now()
+    const output = await handler(request)
+    return {
+      ...output,
+      metadata: { ...output.metadata, durationMs: Date.now() - startedAt },
     }
+  },
+})
+
+const agent = createAgent({
+  provider,
+  middleware: [loggingMiddleware],
+})
+```
+
+中间件可以声明 `tools`，将行为、状态和可调用工具封装成一个独立能力。Agent 配置和中间件之间出现重复工具名时，Core 会直接报错。
+
+需要使用带私有运行时字段的 class 时，可以继承 `Middleware` 基类。包中也为高级集成导出了 `MiddlewarePipeline`，普通应用应优先通过 Agent 注册中间件。
+
+## 消费事件与处理错误
+
+`agent.run()` 和 `agent.resume()` 都会生成统一的 `AgentEvent` 联合类型。常用事件分为：
+
+| 事件                                                                          | 含义                        |
+| ----------------------------------------------------------------------------- | --------------------------- |
+| `agent_run_start`、`agent_run_end`、`turn_start`、`turn_end`                  | run 和模型轮次生命周期。    |
+| `reasoning_start`、`reasoning_content`、`reasoning_end`                       | 模型推理的流式输出。        |
+| `text_start`、`text_delta`、`text_end`                                        | Assistant 文本的流式输出。  |
+| `tool_start`、`tool_input_delta`、`tool_executing`、`tool_result`、`tool_end` | 工具调用进度和结果。        |
+| `state_changed`                                                               | 可序列化的状态快照。        |
+| `suspended`                                                                   | 等待外部决策的 checkpoint。 |
+
+使用可辨识联合类型的 switch 可以完整处理事件：
+
+```ts
+for await (const event of agent.run({ state })) {
+  switch (event.type) {
+    case 'text_delta':
+      process.stdout.write(event.delta)
+      break
+    case 'tool_executing':
+      console.error(`正在执行 ${event.toolName}`)
+      break
+    case 'agent_run_end':
+      console.error(`停止原因：${event.stopReason}`)
+      break
   }
 }
 ```
 
-### `RunContext` —— 中间件的读写视图
+所有内置 Provider 都会把 API 异常转换为统一的 `ProviderError`：
 
 ```ts
-interface RunContext {
-  state: AgentState // 完整会话状态（可变引用，修改会持久化）
-  readonly props: Readonly<Record<string, unknown>> // 只读运行环境，如 cwd
-  runtime: AgentRuntime // provider、system、tools、signal、emit、notifyStateChanged
-  loopState: AgentLoopState // turnIndex、stopReason、lastResponse、pendingToolCalls
+import { ProviderError } from '@mech-code/core'
+
+try {
+  await agent.complete({ state })
+} catch (error) {
+  if (error instanceof ProviderError) {
+    console.error(error.provider, error.code, error.retryable)
+  } else {
+    throw error
+  }
 }
 ```
 
-`state` 是持久化的唯一真相，对其的修改跨轮次保留。中间件需要影响本次模型输入时，改写 `ModelCallRequest.params`；需要影响本次工具输入时，改写 `ToolCallRequest.toolInput`。
+| 错误码             | 可重试 |
+| ------------------ | ------ |
+| `auth_failed`      | 否     |
+| `rate_limited`     | 是     |
+| `context_too_long` | 否     |
+| `model_not_found`  | 否     |
+| `server_error`     | 是     |
+| `network_error`    | 是     |
+| `invalid_request`  | 否     |
+| `aborted`          | 否     |
+| `unknown`          | 否     |
 
-### 示例：日志中间件（Hook 模式）
+应用逻辑应读取 `error.retryable`，不要自行写死这张表。实现流式 Provider 调用的重试中间件时，还可以使用导出的 `retryStreamResult()` 辅助函数。
 
-```ts
-import type { AgentMiddleware } from '@mech-code/core'
+## 等待人工审批
 
-const loggerMiddleware: AgentMiddleware = {
-  name: 'logger',
-  beforeModel(ctx) {
-    console.log(`[Turn ${ctx.loopState.turnIndex}] 发送 ${ctx.state.messages.length} 条消息`)
-  },
-  afterModel(ctx) {
-    const { inputTokens, outputTokens } = ctx.loopState.lastResponse!.usage
-    console.log(`[Turn ${ctx.loopState.turnIndex}] token: ${inputTokens} in / ${outputTokens} out`)
-  },
-}
-```
-
-### 示例：重试中间件（Wrap 模式）
+工具包装器可以抛出 `SuspendSignal`，在敏感操作执行前暂停。Agent 会返回一个可序列化 checkpoint，其中包含所有尚未完成的工具调用：
 
 ```ts
-const retryMiddleware: AgentMiddleware = {
-  name: 'retry',
-  async wrapModelCall(request, handler) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        return await handler(request)
-      } catch (e) {
-        if (!(e instanceof ProviderError) || !e.retryable || attempt === 2) throw e
-        await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
-      }
-    }
-    throw new Error('unreachable')
-  },
-}
-```
+import { SuspendSignal, createMiddleware } from '@mech-code/core'
 
-### 示例：权限中间件（Wrap 模式）
+const sensitiveTools = new Set(['write_file', 'run_command'])
 
-```ts
-const permissionMiddleware: AgentMiddleware = {
-  name: 'permission',
+const approvalMiddleware = createMiddleware({
+  name: 'approval',
   async wrapToolCall(request, handler) {
-    const tool = request.tool ?? getTool(request.toolName)
-    // 只读工具自动放行，写操作工具需要用户确认
-    if (!tool?.flags.readonly) {
-      const confirmed = await askUser(`是否允许执行工具 "${request.toolName}"？`)
-      if (!confirmed) return { content: '用户已拒绝此操作', isError: true }
+    if (!sensitiveTools.has(request.toolName) || request.context.props.approved === true) {
+      return handler(request)
     }
-    return handler(request)
+
+    throw new SuspendSignal('approval_required', {
+      toolCallId: request.toolCallId,
+      toolName: request.toolName,
+      input: request.toolInput,
+    })
   },
+})
+```
+
+需要直接从结果中读取 checkpoint 时使用 `complete()`，然后为每个 pending tool call 提供一个决策：
+
+```ts
+const firstRun = await agent.complete({ state })
+
+if (firstRun.stopReason === 'suspended' && firstRun.checkpoint) {
+  const decisions = Object.fromEntries(
+    firstRun.checkpoint.pendingToolCalls.map((call) => [call.id, { action: 'approve' as const }]),
+  )
+
+  for await (const event of agent.resume({
+    checkpoint: firstRun.checkpoint,
+    decisions,
+    props: { approved: true },
+  })) {
+    if (event.type === 'text_delta') process.stdout.write(event.delta)
+  }
 }
 ```
 
-### 在 Agent 中注册中间件
+每项决策可以是 `approve`、带可选原因的 `deny`，或通过 `modify` 修改工具输入。`resume()` 会从 checkpoint 重建状态、应用决策、执行剩余工具，并继续 Agent Loop。它不会修改恢复前的原始 `state` 对象；如果调用方需要持久化恢复后的状态，应消费 `state_changed` 快照或最终事件。
+
+## 消息与持久化
+
+向 `AgentState` 添加历史记录时应使用消息类。User 消息支持文本、URL 或 base64 图片，以及二进制文件。实际多模态支持取决于所选模型和 Provider。
 
 ```ts
-const agent = createAgent({
-  provider,
-  tools: [searchTool, readFileTool],
-  middleware: [new TokenCounterMiddleware(), retryMiddleware, permissionMiddleware],
-})
+const message = new UserMessage([
+  { type: 'text', text: '描述这张截图。' },
+  {
+    type: 'image',
+    source: { type: 'url', url: 'https://example.com/screenshot.png' },
+  },
+])
 
-// 或在创建后动态追加
-agent.use(myMiddleware)
+state.messages.push(message)
 ```
 
----
-
-## 消息协议
-
-### Agent 消息格式
+使用导出的序列化函数持久化状态。它们会保留消息元数据，并在反序列化时恢复消息类实例：
 
 ```ts
-type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
+import { deserializeAgentState, serializeAgentState } from '@mech-code/core'
+
+const json = JSON.stringify(serializeAgentState(state))
+await storage.set('session-42', json)
+
+const restored = deserializeAgentState(JSON.parse(await storage.get('session-42')))
+restored.messages.push(new UserMessage('继续。'))
+await agent.complete({ state: restored })
 ```
 
-### 多模态输入
+`estimateTokens()`、`estimateMessageTokens()` 和 `estimateMessagesTokens()` 可用于快速估算本地 token 预算。这些结果是近似值，不等同于 Provider 的计费数据。
 
-```ts
-const messages: AgentMessage[] = [
-  new UserMessage([
-    { type: 'text', text: '这张图里有什么？' },
-    { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
-  ]),
-]
-```
+## 公开 API 速查
 
-### 消息工具函数
+| 分类     | 主要导出                                                                                                                                                               |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent    | `Agent`、`createAgent`、`createAgentState`、`serializeAgentState`、`deserializeAgentState`、`SuspendSignal`、`isSuspendSignal`                                         |
+| Provider | `AnthropicProvider`、`OpenAIProvider`、`OpenAICompatibleProvider`、`ProviderError`、`retryStreamResult`                                                                |
+| 工具     | `defineTool`、`registerTool`、`getTool`、`getAllTools`、`getToolDefinitions`、`clearTools`                                                                             |
+| 中间件   | `Middleware`、`createMiddleware`、`MiddlewarePipeline`                                                                                                                 |
+| 消息     | `SystemMessage`、`UserMessage`、`AssistantMessage`、`ToolMessage`、`MessageAccumulator`、`buildChatParams`                                                             |
+| 工具函数 | `estimateTokens`、`estimateMessageTokens`、`estimateMessagesTokens`                                                                                                    |
+| 类型     | `AgentState`、`AgentEvent`、`RunParams`、`RunResult`、`LLMProvider`、`ProviderConfig`、`Tool`、`AgentMiddleware`、`RunContext`、`ToolCallDecision` 及相关请求/结果类型 |
 
-```ts
-import { estimateTokens } from '@mech-code/core'
+## 示例
 
-// 估算 token 数（基于字符数的快速近似，无需调用 API）
-const tokens = estimateTokens('Hello, world!')
-```
-
----
-
-## Agent
-
-### 创建 Agent
-
-```ts
-import { createAgent, createAgentState } from '@mech-code/core'
-
-const agent = createAgent({
-  provider,            // LLMProvider 实例（必填）
-  tools: [...],        // 可用工具列表
-  system: '...',       // 系统提示词
-  middleware: [...],   // 中间件列表
-  maxTurns: 20,        // 最大循环轮数（默认 20）
-})
-```
-
-### 实例方法
-
-```ts
-// 核心执行
-agent.run(params) // AsyncIterable<AgentEvent> —— 流式消费事件
-agent.complete(params) // Promise<RunResult> —— 等待最终结果
-
-// 运行时变更
-agent.use(middleware) // 追加中间件
-agent.addTool(tool) // 动态注册工具
-agent.removeTool('name') // 动态移除工具
-agent.fork(overrides) // 基于当前 Agent 派生新实例（覆盖部分配置）
-```
-
-### State —— 由调用方持有
-
-Agent 会话状态由调用方持有并传入每次 `run()`。Agent 在执行过程中直接修改此对象（追加消息、累加用量），调用方无需手动同步结果。
-
-```ts
-const state = createAgentState()
-// 等价于：{ messages: [], usage: { inputTokens: 0, outputTokens: 0 } }
-
-// 第一轮对话
-state.messages.push(new UserMessage('列出 src/ 下的文件'))
-for await (const event of agent.run({
-  state,
-  config: { signal: abortController.signal },
-  props: { cwd: process.cwd(), platform: process.platform },
-})) {
-  // AgentEvent: agent_run_start | state_changed | turn_start | text_delta | ... | agent_run_end
-}
-
-// 第二轮对话 —— 同一个 state 继续
-state.messages.push(new UserMessage('解释一下 loop.ts 的实现'))
-const result = await agent.complete({ state })
-console.log(result.text) // 本次 assistant 的文本输出
-console.log(result.turnsUsed) // 本次 run 用了几轮
-console.log(result.stopReason) // 'end_turn' | 'max_turns' | 'error' | 'abort'
-```
-
-### fork 派生子任务 Agent
-
-```ts
-// 主 Agent 拥有全部工具
-const mainAgent = createAgent({ provider, tools: allTools })
-
-// 派生只读子 Agent（摘要任务不需要写工具）
-const summaryAgent = mainAgent.fork({
-  tools: readOnlyTools,
-  system: '你是一个摘要助手，只需阅读和总结内容。',
-  maxTurns: 3,
-})
-```
-
----
-
-## 类型导出速查
-
-| 导出名                                     | 说明                                          |
-| ------------------------------------------ | --------------------------------------------- |
-| `createAgent` / `Agent`                    | Agent 工厂与类                                |
-| `createAgentState`                         | 创建空的 `AgentState`                         |
-| `AgentState` / `AgentMessage`              | 会话状态类型                                  |
-| `RunParams` / `RunResult`                  | Agent 运行参数与结果                          |
-| `RunContext` / `ToolCallContext`           | 中间件上下文类型                              |
-| `ModelCallRequest` / `ToolCallRequest`     | Wrap 模式的单次调用请求对象                   |
-| `ModelCallHandler` / `ToolCallHandler`     | Wrap 模式继续向内执行的 handler 类型          |
-| `Awaitable`                                | 同步或异步返回值辅助类型                      |
-| `Middleware`                               | 有状态中间件基类                              |
-| `MiddlewarePipeline`                       | 管道执行器（进阶使用）                        |
-| `AnthropicProvider`                        | Anthropic Provider                            |
-| `OpenAIProvider`                           | OpenAI Provider                               |
-| `OpenAICompatibleProvider`                 | 兼容 OpenAI 协议的通用 Provider               |
-| `ProviderError`                            | 统一错误类                                    |
-| `defineTool`                               | 工具定义工厂                                  |
-| `registerTool` / `getTool` / `getAllTools` | 工具注册表操作                                |
-| `UserMessage` / `AssistantMessage`         | Agent 消息类                                  |
-| `estimateTokens`                           | Token 数快速估算                              |
-| `Message` / `AgentEvent` / `Usage`         | 共享类型（来自 `@mech-code/shared` 的再导出） |
+- [基础 Agent](./examples/basic-agent.ts)：工具、多轮状态和事件渲染。
+- [权限中间件](./examples/middleware-auth.ts)：围绕工具调用进行策略检查。
+- [Todo 中间件](./examples/middleware-todo.ts)：同时包含状态和工具的自包含中间件。
