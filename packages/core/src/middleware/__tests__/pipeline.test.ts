@@ -32,23 +32,20 @@ function createMockRunContext(overrides?: Partial<RunContext>): RunContext {
   }
   return {
     state,
-    props: Object.freeze({}),
     runtime: {
       runId: 'run-test',
+      startedAt: 0,
+      props: Object.freeze({}),
       provider: createMockProvider(),
       system: '',
       tools: [],
       middleware: [],
       signal: new AbortController().signal,
-      emit: vi.fn(),
-      notifyStateChanged: vi.fn(),
-    },
-    loopState: {
       turnIndex: 0,
       stopReason: 'end_turn',
       lastResponse: undefined,
       pendingToolCalls: [],
-      stateRevision: 0,
+      emitCustomAgentEvent: vi.fn(),
     },
     ...overrides,
   }
@@ -88,18 +85,20 @@ describe('MiddlewarePipeline', () => {
   })
 
   describe('hooks 与 props 访问', () => {
-    it('beforeModel hook 可读取 ctx.props', async () => {
+    it('beforeModel hook 可读取 ctx.runtime.props', async () => {
       const receivedProps: unknown[] = []
       const mw: AgentMiddleware = {
         name: 'props-reader',
         beforeModel(ctx) {
-          receivedProps.push(ctx.props)
+          receivedProps.push(ctx.runtime.props)
         },
       }
 
       const pipeline = new MiddlewarePipeline([mw])
       const props = Object.freeze({ userId: 'u-123', limit: 50 })
-      const ctx = createMockRunContext({ props })
+      const ctx = createMockRunContext({
+        runtime: { ...createMockRunContext().runtime, props },
+      })
 
       await pipeline.runBeforeModel(ctx)
 
@@ -114,12 +113,12 @@ describe('MiddlewarePipeline', () => {
       }).toThrow()
     })
 
-    it('wrapToolCall 可读取 request.context.props', async () => {
+    it('wrapToolCall 可读取 request.context.runtime.props', async () => {
       const receivedProps: unknown[] = []
       const mw: AgentMiddleware = {
         name: 'wrap-props-reader',
         async wrapToolCall(request, handler) {
-          receivedProps.push(request.context.props)
+          receivedProps.push(request.context.runtime.props)
           return handler(request)
         },
       }
@@ -130,7 +129,9 @@ describe('MiddlewarePipeline', () => {
       const chain = pipeline.buildToolCallChain(baseFn)
 
       const request = {
-        context: createMockRunContext({ props }),
+        context: createMockRunContext({
+          runtime: { ...createMockRunContext().runtime, props },
+        }),
         toolCallId: 'tc-1',
         toolName: 'test',
         toolInput: {},
@@ -254,7 +255,7 @@ describe('createMiddleware', () => {
     const mw = createMiddleware({
       name: 'test-mw',
       beforeModel(ctx) {
-        ctx.runtime.system += ' appended'
+        void ctx.runtime.system
       },
     })
 

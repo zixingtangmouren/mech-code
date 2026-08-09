@@ -22,7 +22,7 @@ Hook 在 Agent Loop 的固定阶段顺序运行，输入是 `RunContext`，职�
 
 - `beforeAgent`：初始化中间件 state、加载 run-level 配置。
 - `beforeModel`：整理 `state.messages`、注入 agent 内部提醒消息、更新每轮计数。
-- `afterModel`：观察 `loopState.lastResponse`、记录模型输出统计、检查 tool call 一致性。
+- `afterModel`：观察 `runtime.lastResponse`、记录模型输出统计、检查 tool call 一致性。
 - `afterAgent`：清理临时资源、收尾统计；具有 finally 语义。
 
 Hook 不负责包住一次调用，也不适合表达“调用内层逻辑多次”。
@@ -81,18 +81,12 @@ interface RunContext {
   /** 完整会话状态；中间件直接修改会持久化 */
   state: AgentState
 
-  /** 调用方传入的只读环境/意图信息，例如 cwd、用户配置 */
-  readonly props: Readonly<Record<string, unknown>>
-
-  /** 运行期能力与配置，例如 provider、system、tools、signal、事件发射 */
-  runtime: AgentRuntime
-
-  /** Agent Loop 内部控制状态，例如 turnIndex、lastResponse、pendingToolCalls */
-  loopState: AgentLoopState
+  /** 本次执行的只读框架状态、环境信息与运行能力 */
+  readonly runtime: AgentRuntime
 }
 ```
 
-`state` 是持久化真相；`props` 是只读输入；`runtime.signal` 只表示取消控制，不进入持久状态。
+`state` 是持久化真相。`runtime` 是框架创建的只读视图，包含 `props`、`turnIndex`、`lastResponse`、`pendingToolCalls`、provider 和 signal 等信息。中间件可以读取这些字段，但只有 Agent Loop 内部的 runtime handle 可以修改执行状态。
 
 ### 4.2 ModelCallRequest
 
@@ -174,6 +168,22 @@ interface ToolCallContext extends RunContext {
 ```
 
 因此 wrapper 改写后的 `toolInput` 会成为工具实现看到的真实输入。
+
+### 4.5 自定义事件
+
+中间件通过只读 runtime 上的 `emitCustomAgentEvent` 主动暴露实时业务事件：
+
+```ts
+ctx.runtime.emitCustomAgentEvent({
+  source: 'todo',
+  name: 'updated',
+  payload: { items },
+})
+```
+
+Core 为事件补充 `type: 'custom'`、`runId` 和发送时的 `turnIndex`，并复制可 JSON 序列化的 payload。Loop 在等待异步 hook、wrapper、stream 或工具执行时会实时转发事件。中间件应导出具体事件类型和类型守卫，让外部消费者不必解析整个 `AgentState`。
+
+自定义事件只用于实时投影，不替代状态持久化。中间件的完整状态仍写入 `AgentState`，由 checkpoint 或 `agent_run_end.state` 交付。
 
 ## 5. 执行流程
 

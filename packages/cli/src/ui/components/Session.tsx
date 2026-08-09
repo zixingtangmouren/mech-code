@@ -2,9 +2,9 @@ import { Box, Text, useApp } from 'ink'
 import React, { useState, useCallback, useRef } from 'react'
 import type { Agent, AgentState } from '@mech-code/core'
 import { UserMessage, createAgentState } from '@mech-code/core'
-import { TODO_STORE_KEY } from '@mech-code/middleware'
-import type { TodoItem, TodoState } from '@mech-code/middleware'
-import type { AgentEvent, SerializableAgentState, Usage } from '@mech-code/shared'
+import { isContextCompactEvent, isTodoUpdatedEvent } from '@mech-code/middleware'
+import type { TodoItem } from '@mech-code/middleware'
+import type { AgentEvent, Usage } from '@mech-code/shared'
 import { InputBox } from './InputBox.js'
 import { MessageList } from './MessageList.js'
 import type { HistoryEntry } from './MessageList.js'
@@ -38,6 +38,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
   const [error, setError] = useState<string | null>(null)
   const [totalUsage, setTotalUsage] = useState<Usage | null>(null)
   const [spinnerLabel, setSpinnerLabel] = useState('思考中...')
+  const [isCompacting, setIsCompacting] = useState(false)
   const [processingStartTime, setProcessingStartTime] = useState<number>(0)
   const [panelTodos, setPanelTodos] = useState<TodoItem[]>([])
 
@@ -61,6 +62,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             stateRef.current = createAgentState()
             setTotalUsage(null)
             setPanelTodos([])
+            setIsCompacting(false)
           },
           exit,
         })
@@ -77,6 +79,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
       setError(null)
       setStatus('processing')
       setSpinnerLabel('思考中...')
+      setIsCompacting(false)
       setProcessingStartTime(Date.now())
 
       const abortController = new AbortController()
@@ -105,6 +108,16 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             setSpinnerLabel('思考中...')
           }
 
+          if (isContextCompactEvent(event)) {
+            if (event.name === 'started') {
+              setIsCompacting(true)
+              setSpinnerLabel('正在压缩上下文...')
+            } else {
+              setIsCompacting(false)
+              setSpinnerLabel('思考中...')
+            }
+          }
+
           // 累计 token 用量
           if (event.type === 'turn_end' && event.usage) {
             setTotalUsage((prev) => {
@@ -117,8 +130,8 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
             })
           }
 
-          if (event.type === 'state_changed' && event.changedKeys.includes(TODO_STORE_KEY)) {
-            setPanelTodos(getPanelTodos(event.state))
+          if (isTodoUpdatedEvent(event)) {
+            setPanelTodos(event.payload.items.filter((todo) => todo.status !== 'completed'))
           }
         }
 
@@ -139,6 +152,7 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
         }
       } finally {
         setStatus('idle')
+        setIsCompacting(false)
         abortRef.current = null
       }
     },
@@ -159,18 +173,12 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
       <TodoPanel todos={panelTodos} />
 
       {/* 处理中指示 */}
-      {status === 'processing' && currentEvents.length === 0 && (
-        <Box marginTop={1}>
-          <Spinner label={spinnerLabel} startTime={processingStartTime} />
-        </Box>
-      )}
-
-      {/* 工具执行时也显示 spinner (当有事件但最后一个工具还未完成) */}
-      {status === 'processing' && currentEvents.length > 0 && isLastToolPending(currentEvents) && (
-        <Box marginTop={0}>
-          <Spinner label={spinnerLabel} startTime={processingStartTime} />
-        </Box>
-      )}
+      {status === 'processing' &&
+        (currentEvents.length === 0 || isCompacting || isLastToolPending(currentEvents)) && (
+          <Box marginTop={1}>
+            <Spinner label={spinnerLabel} startTime={processingStartTime} />
+          </Box>
+        )}
 
       {/* 错误信息 */}
       {error && (
@@ -192,11 +200,6 @@ export function Session({ agent, model, cwd }: SessionProps): React.ReactElement
       <StatusBar model={model} usage={totalUsage} />
     </Box>
   )
-}
-
-function getPanelTodos(state: AgentState | SerializableAgentState): TodoItem[] {
-  const todoState = state[TODO_STORE_KEY] as TodoState | undefined
-  return (todoState?.items ?? []).filter((todo): todo is TodoItem => todo.status !== 'completed')
 }
 
 /** 检查最后一个工具调用是否仍在执行中 */

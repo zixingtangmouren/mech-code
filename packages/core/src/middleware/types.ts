@@ -1,4 +1,4 @@
-import type { AgentEvent, PendingToolCall, ToolDefinition } from '@mech-code/shared'
+import type { JsonValue, PendingToolCall, ToolDefinition } from '@mech-code/shared'
 import type { AgentState } from '../agent/state.js'
 import type {
   LLMProvider,
@@ -19,23 +19,33 @@ export type ToolCallHandler = (request: ToolCallRequest) => Promise<ToolOutput>
 
 export type AgentStopReason = 'end_turn' | 'max_turns' | 'error' | 'abort' | 'suspended'
 
-export interface AgentRuntime {
-  readonly runId: string
-  provider: LLMProvider
-  system: string
-  tools: ToolDefinition[]
-  readonly middleware: AgentMiddleware[]
-  readonly signal: AbortSignal
-  emit(event: AgentEvent): void
-  notifyStateChanged(reason: string, keys?: string[]): void
+export interface CustomAgentEventInput {
+  source: string
+  name: string
+  payload: JsonValue
 }
 
-export interface AgentLoopState {
-  turnIndex: number
-  stopReason: AgentStopReason
-  lastResponse?: ChatResponse
-  pendingToolCalls: PendingToolCall[]
-  stateRevision: number
+export interface AgentRuntime {
+  readonly runId: string
+  /** 当前执行链开始时间；从 checkpoint 恢复时保持不变。 */
+  readonly startedAt: number
+  /** 调用方为本次运行传入的只读环境信息。 */
+  readonly props: Readonly<Record<string, unknown>>
+  readonly provider: LLMProvider
+  readonly system: string
+  readonly tools: readonly ToolDefinition[]
+  readonly middleware: readonly AgentMiddleware[]
+  readonly signal: AbortSignal
+  /** 当前模型调用轮次。 */
+  readonly turnIndex: number
+  /** 当前 run 的结束原因。 */
+  readonly stopReason: AgentStopReason
+  /** 最近一次模型响应的只读快照。 */
+  readonly lastResponse?: Readonly<ChatResponse>
+  /** 尚未完成的工具调用只读快照。 */
+  readonly pendingToolCalls: readonly Readonly<PendingToolCall>[]
+  /** 向 Agent 事件流发送中间件自定义的可序列化事件。 */
+  readonly emitCustomAgentEvent: (event: CustomAgentEventInput) => void
 }
 
 export interface AgentMiddleware {
@@ -110,7 +120,7 @@ export type MiddlewareInit = Omit<AgentMiddleware, 'state'> & {
  * @example
  * const logger = createMiddleware({
  *   name: 'logger',
- *   beforeModel(ctx) { console.log('turn', ctx.loopState.turnIndex) },
+ *   beforeModel(ctx) { console.log('turn', ctx.runtime.turnIndex) },
  * })
  *
  * @example
@@ -137,12 +147,8 @@ export function createMiddleware(init: MiddlewareInit): AgentMiddleware {
 export interface RunContext {
   /** 完整会话状态（可变引用，中间件对 state 的修改会持久化） */
   state: AgentState
-  /** 调用方传入的只读配置/意图，中间件通过此字段读取运行时参数 */
-  readonly props: Readonly<Record<string, unknown>>
-  /** 运行期能力和配置 */
-  runtime: AgentRuntime
-  /** Agent Loop 内部控制状态 */
-  loopState: AgentLoopState
+  /** 本次执行的只读框架状态、环境信息与运行能力。 */
+  readonly runtime: AgentRuntime
 }
 
 /** 模型调用 Wrap 的本次真实请求对象 */

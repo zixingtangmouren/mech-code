@@ -1,7 +1,14 @@
 export {
   CONTEXT_COMPACT_STATE_KEY,
+  CONTEXT_COMPACT_EVENT_SOURCE,
   contextCompactMiddleware,
+  isContextCompactEvent,
+  type ContextCompactCompletedEvent,
+  type ContextCompactEvent,
+  type ContextCompactFailedEvent,
+  type ContextCompactMode,
   type ContextCompactMiddlewareOptions,
+  type ContextCompactStartedEvent,
   type ContextCompactState,
   type ContextSummaryRecord,
   type ContextTrigger,
@@ -26,8 +33,12 @@ export {
 export {
   todoMiddleware,
   TODO_STORE_KEY,
+  TODO_EVENT_SOURCE,
+  TODO_UPDATED_EVENT_NAME,
+  isTodoUpdatedEvent,
   type TodoItem,
   type TodoMiddlewareOptions,
   type TodoState,
   type TodoStatus,
+  type TodoUpdatedEvent,
 } from './todo.js'

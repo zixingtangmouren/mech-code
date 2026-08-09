@@ -11,11 +11,8 @@ describe('MessageAccumulator', () => {
       { type: 'text_delta', delta: ', world!' },
     ]
     for (const e of events) acc.push(e)
-    const msg = acc.flush()
-    expect(msg).toEqual({
-      role: 'assistant',
-      content: [{ type: 'text', text: 'Hello, world!' }],
-    })
+    const content = acc.flush()
+    expect(content).toEqual([{ type: 'text', text: 'Hello, world!' }])
   })
 
   it('accumulates reasoning (thinking) events', () => {
@@ -24,9 +21,8 @@ describe('MessageAccumulator', () => {
     acc.push({ type: 'reasoning_content', text: 'Let me think...' })
     acc.push({ type: 'text_start' })
     acc.push({ type: 'text_delta', delta: 'The answer is 42.' })
-    const msg = acc.flush()
-    expect(msg.role).toBe('assistant')
-    expect(msg.content).toEqual([
+    const content = acc.flush()
+    expect(content).toEqual([
       { type: 'thinking', text: 'Let me think...' },
       { type: 'text', text: 'The answer is 42.' },
     ])
@@ -37,8 +33,8 @@ describe('MessageAccumulator', () => {
     acc.push({ type: 'tool_start', toolCallId: 'call_1', toolName: 'read_file' })
     acc.push({ type: 'tool_input_delta', delta: '{"path":' } as AgentEvent)
     acc.push({ type: 'tool_input_delta', delta: '"foo.ts"}' } as AgentEvent)
-    const msg = acc.flush()
-    expect(msg.content).toEqual([
+    const content = acc.flush()
+    expect(content).toEqual([
       { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } },
     ])
   })
@@ -55,7 +51,7 @@ describe('MessageAccumulator', () => {
     acc.push({ type: 'text_start' })
     acc.push({ type: 'text_delta', delta: 'some text' })
     acc.reset()
-    const msg = acc.flush()
-    expect(msg.content).toEqual([])
+    const content = acc.flush()
+    expect(content).toEqual([])
   })
 })

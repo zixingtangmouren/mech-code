@@ -38,6 +38,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
       model: config.model,
       baseUrl: config.baseUrl,
       protocol: config.protocol,
+      headers: config.headers,
+      timeoutMs: config.timeoutMs,
       defaultParams: { maxTokens: 8192, ...config.defaultParams },
     })
   }
@@ -48,6 +50,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
       model: config.model,
       baseUrl: config.baseUrl,
       protocol: config.protocol,
+      headers: config.headers,
+      timeoutMs: config.timeoutMs,
       defaultParams: config.defaultParams ?? {},
     })
   }
@@ -58,6 +62,8 @@ export function createProviderFromConfig(name: string, entry: ProviderConfigEntr
     model: config.model,
     baseUrl: config.baseUrl ?? '',
     protocol: config.protocol,
+    headers: config.headers,
+    timeoutMs: config.timeoutMs,
     defaultParams: config.defaultParams ?? {},
   })
 }

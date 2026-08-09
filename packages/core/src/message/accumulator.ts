@@ -1,5 +1,4 @@
 import type { AgentEvent, AssistantContentBlock } from '@mech-code/shared'
-import type { InternalMessage } from './types.js'
 
 /**
  * 流式累积过程中的可变块状态。
@@ -14,15 +13,14 @@ type PendingBlock =
 /**
  * MessageAccumulator（消息累积器）
  *
- * 逐一接收流中的 AgentEvent，并组装出对应的
- * InternalMessage（role: 'assistant'）。
+ * 逐一接收流中的 AgentEvent，并组装 AssistantContentBlock 数组。
  *
  * 用法：
  *   const acc = new MessageAccumulator()
  *   for await (const event of stream) {
  *     acc.push(event)
  *   }
- *   const msg = acc.flush()   // → InternalMessage
+ *   const content = acc.flush()
  *   acc.reset()               // 准备好处理下一轮
  */
 export class MessageAccumulator {
@@ -77,11 +75,11 @@ export class MessageAccumulator {
   }
 
   /**
-   * 完成累积并返回组装好的 InternalMessage。
+   * 完成累积并返回组装好的 assistant 内容块。
    * 将 tool_use 的输入 JSON 字符串解析为对象。
    */
-  flush(): InternalMessage {
-    const content: AssistantContentBlock[] = this.blocks.map((block): AssistantContentBlock => {
+  flush(): AssistantContentBlock[] {
+    return this.blocks.map((block): AssistantContentBlock => {
       if (block.type === 'tool_use') {
         let input: Record<string, unknown> = {}
         try {
@@ -93,8 +91,6 @@ export class MessageAccumulator {
       }
       return { type: block.type, text: block.text }
     })
-
-    return { role: 'assistant', content }
   }
 
   /** 返回当前累积状态中所有 tool_use 块 */

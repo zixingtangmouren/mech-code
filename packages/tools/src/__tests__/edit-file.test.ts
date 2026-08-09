@@ -44,9 +44,10 @@ function createToolContext(
       usage: { inputTokens: 0, outputTokens: 0 },
       ...(options.readFileState ? { readFileState: options.readFileState } : {}),
     },
-    props: Object.freeze({ cwd: testDir }),
     runtime: {
       runId: 'run-test',
+      startedAt: 0,
+      props: Object.freeze({ cwd: testDir }),
       provider: {
         name: 'mock',
         async chat() {
@@ -72,14 +73,11 @@ function createToolContext(
       tools: [],
       middleware: [],
       signal: new AbortController().signal,
-      emit() {},
-      notifyStateChanged() {},
-    },
-    loopState: {
       turnIndex: 0,
       stopReason: 'end_turn',
+      lastResponse: undefined,
       pendingToolCalls: [],
-      stateRevision: 0,
+      emitCustomAgentEvent() {},
     },
     toolCallId: 'tool-call-test',
     toolName: 'edit_file',

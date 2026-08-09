@@ -112,7 +112,7 @@ const state: AgentState = {
 }
 
 // 第一轮对话
-state.messages.push({ role: 'user', content: '你好' })
+state.messages.push(new UserMessage('你好'))
 for await (const event of agent.run({ state })) {
   // 处理事件...
 }
@@ -120,7 +120,7 @@ for await (const event of agent.run({ state })) {
 // state.usage 已累加本次用量
 
 // 第二轮对话 —— 同一个 state 继续
-state.messages.push({ role: 'user', content: '继续上面的任务' })
+state.messages.push(new UserMessage('继续上面的任务'))
 for await (const event of agent.run({ state })) { ... }
 ```
 
@@ -350,7 +350,7 @@ async function* runLoop(state: AgentState, config: AgentConfig): AsyncGenerator<
     // ---- LLM CALL ----
     const baseLLMCall: LLMCallFn = (ctx) =>
       provider.stream({
-        messages: normalize(ctx.callMessages),
+        messages: ctx.callMessages,
         system: ctx.system,
         tools: ctx.tools,
       })
@@ -492,12 +492,13 @@ const loopDetectionMiddleware: AgentMiddleware = {
 
 ### 7.2 消息标记机制
 
-在内部消息类型上扩展一个可选标记：
+压缩状态写入消息的 metadata，由上下文中间件维护：
 
 ```ts
-interface InternalMessage extends Message {
-  /** 被摘要压缩过的消息，发送给 LLM 前应过滤 */
-  _compressed?: true
+message.metadata.contextCompact = {
+  /** 被摘要压缩过的消息，Provider 调用前应过滤 */
+  compressed: true,
+  summaryId,
 }
 ```
 

@@ -1,5 +1,7 @@
 # 中间件增强：工具注册 + State/Props 分离
 
+> 历史设计记录。当前 `RunContext` 已收敛为 `state / runtime` 两层，运行入参 `props` 通过 `ctx.runtime.props` 读取；当前契约见 `15-agent-loop-state-context-design.md`。
+
 ## Context
 
 借鉴 LangChain.js Agent Middleware 的设计理念，为 mech-code 的中间件系统引入两个增强：
@@ -89,7 +91,7 @@ collectMiddlewareTools(): Array<{ tool: Tool; source: string }> {
 
 #### 2.1 核心概念
 
-|        | Store (`mw.store`)                    | Props (`ctx.props`)             |
+|        | Store (`mw.store`)                    | Props (`ctx.runtime.props`)     |
 | ------ | ------------------------------------- | ------------------------------- |
 | 谁写   | 中间件自己                            | 调用方 (`agent.run({ props })`) |
 | 谁读   | 中间件自己 + 其他中间件 + 工具        | 中间件（只读）                  |
@@ -118,19 +120,21 @@ export interface ResumeParams {
 }
 ```
 
-#### 2.3 `RunContext` 新增 `props`
+#### 2.3 `RunContext` 新增 `props`（已被当前 runtime 视图取代）
 
 ```ts
 // middleware/types.ts
 export interface RunContext {
   // ... 现有字段
   /** 调用方传入的只读属性（不持久化），语义同 React props */
-  readonly props: Readonly<Record<string, unknown>>
+  readonly runtime: {
+    readonly props: Readonly<Record<string, unknown>>
+  }
   // ...
 }
 ```
 
-`props` 在 `RunContext` 上 **非可选**（总是存在）。调用方不传时默认为 `Object.freeze({})`。
+`runtime.props` 在 `RunContext` 上 **非可选**（总是存在）。调用方不传时默认为 `Object.freeze({})`。
 
 #### 2.4 Loop 中注入 props
 
@@ -138,7 +142,7 @@ export interface RunContext {
 
 ```ts
 const props = Object.freeze(params.props ?? {})
-const ctx = { ..., props, ... }
+const ctx = { state, runtime: { ..., props } }
 ```
 
 `ToolCallContext extends RunContext`，无需额外处理。
@@ -175,7 +179,7 @@ export interface AgentMiddleware {
 2. **单元测试** (`packages/core/src/middleware/__tests__/pipeline.test.ts`):
    - 中间件工具收集：验证 `collectMiddlewareTools()` 正确收集
    - 名称冲突：验证重复工具名抛出包含来源信息的 Error
-   - props 透传：mock middleware 读取 `ctx.props`，验证值正确
+   - props 透传：mock middleware 读取 `ctx.runtime.props`，验证值正确
    - props 不可变：验证 `Object.freeze` 生效
    - props 不持久化：验证 checkpoint 不含 props
 3. **集成测试** (`packages/core/src/agent/__tests__/`):

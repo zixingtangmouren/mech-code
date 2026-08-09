@@ -7,6 +7,7 @@ import {
   createMiddleware,
 } from '@mech-code/core'
 import type {
+  AgentEvent,
   AgentState,
   CallOptions,
   ChatParams,
@@ -14,7 +15,7 @@ import type {
   LLMProvider,
   StreamResult,
 } from '@mech-code/core'
-import { TODO_STORE_KEY, todoMiddleware } from '../todo.js'
+import { TODO_STORE_KEY, isTodoUpdatedEvent, todoMiddleware } from '../todo.js'
 import type { TodoState } from '../todo.js'
 
 interface MockProvider extends LLMProvider {
@@ -84,14 +85,28 @@ describe('todoMiddleware', () => {
     const state = createAgentState()
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
 
-    for await (const _event of agent.run({ state })) {
-      // consume stream
+    const events: AgentEvent[] = []
+    for await (const event of agent.run({ state })) {
+      events.push(event)
     }
 
     const todos = readTodoState(state)
     expect(todos.items).toHaveLength(2)
     expect(todos.items[1]).toEqual({ content: 'Implement middleware', status: 'in_progress' })
     expect(todos.lastWriteTurn).toBe(0)
+    expect(events.filter(isTodoUpdatedEvent)).toEqual([
+      expect.objectContaining({
+        type: 'custom',
+        source: 'todo',
+        name: 'updated',
+        payload: {
+          items: [
+            { content: 'Inspect code', status: 'completed' },
+            { content: 'Implement middleware', status: 'in_progress' },
+          ],
+        },
+      }),
+    ])
   })
 
   it('clears todo state when all todos are completed', async () => {
@@ -119,8 +134,9 @@ describe('todoMiddleware', () => {
     }
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
 
-    for await (const _event of agent.run({ state })) {
-      // consume stream
+    const events: AgentEvent[] = []
+    for await (const event of agent.run({ state })) {
+      events.push(event)
     }
 
     const todos = readTodoState(state)
@@ -128,6 +144,7 @@ describe('todoMiddleware', () => {
     expect(todos.lastWriteTurn).toBeUndefined()
     expect(todos.lastReminderTurn).toBeUndefined()
     expect(todos.writeCallCountByTurn).toEqual({})
+    expect(events.filter(isTodoUpdatedEvent)[0]?.payload.items).toEqual([])
   })
 
   it('rejects multiple write_todos calls in one assistant turn', async () => {
@@ -154,8 +171,9 @@ describe('todoMiddleware', () => {
     const state = createAgentState()
     const agent = createAgent({ provider, middleware: [todoMiddleware()], maxTurns: 3 })
 
-    for await (const _event of agent.run({ state })) {
-      // consume stream
+    const events: AgentEvent[] = []
+    for await (const event of agent.run({ state })) {
+      events.push(event)
     }
 
     const toolMessages = state.messages.filter((message) => message.role === 'tool')
@@ -166,6 +184,7 @@ describe('todoMiddleware', () => {
       ),
     ).toBe(true)
     expect(readTodoState(state).items).toEqual([])
+    expect(events.filter(isTodoUpdatedEvent)).toEqual([])
   })
 
   it('injects reminder as an agent user message before the latest user message when both thresholds are met', async () => {
@@ -207,7 +226,10 @@ describe('todoMiddleware', () => {
       injected: true,
       kind: 'todo_reminder',
     })
-    expect(observedMessages[0]?.[1]).toMatchObject({ role: 'user', content: 'continue' })
+    expect(observedMessages[0]?.[1]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'continue' }],
+    })
     expect(provider.streamCalls[0]?.messages).toHaveLength(2)
     const providerReminderMessage = provider.streamCalls[0]?.messages[0]
     expect(providerReminderMessage?.role).toBe('user')
@@ -219,14 +241,17 @@ describe('todoMiddleware', () => {
     })
     expect(provider.streamCalls[0]?.messages[1]).toMatchObject({
       role: 'user',
-      content: 'continue',
+      content: [{ type: 'text', text: 'continue' }],
     })
     expect(state.messages).toHaveLength(3)
     expect(state.messages[0]).toMatchObject({
       role: 'user',
       metadata: { source: 'agent', injected: true, kind: 'todo_reminder' },
     })
-    expect(state.messages[1]).toMatchObject({ role: 'user', content: 'continue' })
+    expect(state.messages[1]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'continue' }],
+    })
     expect(state.messages[2]).toMatchObject({ role: 'assistant' })
     expect(readTodoState(state).lastReminderTurn).toBe(3)
   })

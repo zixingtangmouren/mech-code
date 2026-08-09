@@ -1,7 +1,5 @@
-import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
+import type { UserContentBlock, AssistantContentBlock, ImageSource } from '@mech-code/shared'
 import type { AgentMessage } from '../../message/message.js'
-import type { InternalMessage } from '../../message/types.js'
-import { normalizeMessages } from '../../message/normalize.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 
 // === Anthropic API 请求体类型 ===
@@ -61,12 +59,11 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
 
   serialize(messages: AgentMessage[], options: SerializeOptions): AnthropicRequest {
     const { system, tools, modelParams } = options
-    const internalMessages = normalizeMessages(messages)
 
     const result: AnthropicRequest = {
       model: this.model,
       max_tokens: modelParams?.maxTokens ?? this.defaultMaxTokens,
-      messages: this.convertMessages(internalMessages),
+      messages: this.convertMessages(messages),
     }
 
     if (system) result.system = system
@@ -92,7 +89,12 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
     return result
   }
 
-  private convertMessages(messages: InternalMessage[]): AnthropicMessage[] {
+  /**
+   * 将 AgentMessage 转化为 Anthropic 官方消息格式
+   * @param messages
+   * @returns
+   */
+  private convertMessages(messages: AgentMessage[]): AnthropicMessage[] {
     const result: AnthropicMessage[] = []
 
     for (const msg of messages) {
@@ -111,16 +113,12 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
         // 连续的 tool 消息合并到同一个 user 消息中
         let toolResultContent: string | AnthropicToolResultContent[] = msg.content
         // 图片工具结果：生成多模态 content block
-        if (msg._imageData) {
+        if (msg.image) {
           toolResultContent = [
             { type: 'text', text: msg.content },
             {
               type: 'image',
-              source: {
-                type: 'base64',
-                media_type: msg._imageData.mediaType,
-                data: msg._imageData.base64,
-              },
+              source: this.convertImageSource(msg.image),
             },
           ]
         }
@@ -169,5 +167,12 @@ export class AnthropicSerializer implements MessageSerializer<AnthropicRequest> 
     }
     // thinking 块需要 signature 才能发回 API；我们不保存 signature，暂时跳过
     return []
+  }
+
+  private convertImageSource(source: ImageSource): AnthropicImageSource {
+    if (source.type === 'base64') {
+      return { type: 'base64', media_type: source.mediaType, data: source.data }
+    }
+    return { type: 'url', url: source.url }
   }
 }

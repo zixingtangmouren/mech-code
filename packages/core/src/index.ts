@@ -25,7 +25,7 @@ export type {
   SerializeOptions,
 } from './provider/types.js'
 export { ProviderError, httpStatusToCode } from './provider/errors.js'
-export type { ProviderErrorCode } from './provider/errors.js'
+export type { ProviderErrorCode, ProviderErrorOptions } from './provider/errors.js'
 export { retryStreamResult } from './provider/stream-result.js'
 export type {
   StreamResultRetryContext,
@@ -36,7 +36,6 @@ export { OpenAIProvider } from './provider/openai/provider.js'
 export { OpenAICompatibleProvider } from './provider/openai-compatible/provider.js'
 
 // 消息协议
-export type { UserContentBlock, AssistantContentBlock } from './message/types.js'
 export { MessageAccumulator } from './message/accumulator.js'
 export { buildChatParams } from './message/builder.js'
 export {
@@ -48,7 +47,12 @@ export {
   deserializeAgentMessage,
   serializeAgentMessage,
 } from './message/message.js'
-export type { MessageMetadata, MessageOptions, SerializedAgentMessage } from './message/message.js'
+export type {
+  MessageMetadata,
+  MessageOptions,
+  SerializedAgentMessage,
+  ToolMessageOptions,
+} from './message/message.js'
 export {
   estimateTokens,
   estimateMessageTokens,
@@ -63,11 +67,11 @@ export type {
   ModelCallRequest,
   ToolCallRequest,
   AgentRuntime,
-  AgentLoopState,
   ModelCallHandler,
   ToolCallHandler,
   Awaitable,
   MiddlewareInit,
+  CustomAgentEventInput,
 } from './middleware/types.js'
 export { Middleware, createMiddleware } from './middleware/types.js'
 export { MiddlewarePipeline } from './middleware/pipeline.js'
@@ -94,10 +98,12 @@ export {
 // 重新导出供外部消费者使用的共享类型
 export type {
   Message,
-  UserContentBlock as UserContentBlockExternal,
-  AssistantContentBlock as AssistantContentBlockExternal,
+  UserContentBlock,
+  AssistantContentBlock,
   ImageSource,
   Usage,
   ToolDefinition,
   AgentEvent,
+  CustomAgentEvent,
+  JsonValue,
 } from '@mech-code/shared'

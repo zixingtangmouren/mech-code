@@ -1,10 +1,17 @@
-# Agent Loop State/Context 分层设计
+# Agent Loop State/Runtime 设计
 
-> 当前版本说明 Agent Loop 的四层运行模型：`state / props / runtime / loopState`。本设计取代旧的 `AgentState.store`、`propsSchema`、`callMessages` 投影设计。
+> 当前版本说明 Agent Loop 的两层公共 Context、只读 runtime 视图和 checkpoint runtime 投影。本设计取代旧的 `state / props / runtime / loopState` 四层 Context。
 
-## 1. 运行入参
+## 1. 设计目标
 
-`agent.run()`、`agent.complete()` 和 `agent.resume()` 的运行时入参统一分为三类：
+Agent Loop 同时处理持久会话数据、调用方运行参数、框架执行状态和进程内依赖。公共 API 只暴露两个概念：
+
+- `state`：跨多次 run 持久存在的可变会话状态。
+- `runtime`：当前执行的只读框架视图，包含 props、执行进度和进程内能力。
+
+框架内部通过私有 runtime handle 修改执行状态，中间件和工具不能直接改写轮次、待执行工具或停止原因。
+
+## 2. 运行入参
 
 ```ts
 agent.run({
@@ -20,144 +27,154 @@ agent.run({
 })
 ```
 
-| 字段     | 语义                                         | 持久化 |
-| -------- | -------------------------------------------- | ------ |
-| `state`  | 会话动态状态，Agent 和中间件会直接修改       | 是     |
-| `config` | 本次 run 的控制配置，如 `maxTurns`、`signal` | 否     |
-| `props`  | 本次 run 的只读环境信息，如 `cwd`、系统信息  | 否     |
+| 字段     | 语义                   | 是否进入 checkpoint |
+| -------- | ---------------------- | ------------------- |
+| `state`  | 会话动态状态           | 是                  |
+| `config` | 本次调用控制配置       | 否                  |
+| `props`  | 本次调用的只读环境信息 | 否                  |
 
-`signal` 属于 `config`，因为它控制当前任务终止；`cwd` 属于 `props`，因为它描述本次运行环境。
-
-## 2. AgentState
-
-`AgentState` 是会话状态唯一真相。固定内部字段只有：
-
-- `messages`：真实消息历史。
-- `usage`：跨多次 run 累计的 token 用量。
-
-中间件和工具可以直接扩展顶层字段，例如：
-
-- `state.todos`
-- `state.shellCwd`
-- `state.readFileState`
-
-不再使用 `state.store`。中间件可通过 `AgentMiddleware.state` 声明默认扩展 state，Loop 在 run 开始时合并到 `AgentState` 顶层，且不覆盖调用方已有字段。
+`props` 是运行入参，但中间件和工具统一通过 `ctx.runtime.props` 读取。
 
 ## 3. RunContext
-
-中间件 hook、wrap 和工具执行收到同一套分层 Context：
 
 ```ts
 interface RunContext {
   state: AgentState
-  props: Readonly<Record<string, unknown>>
-  runtime: AgentRuntime
-  loopState: AgentLoopState
+  readonly runtime: AgentRuntime
 }
 ```
 
 ### 3.1 state
 
-`state` 是真实可变会话状态。中间件修改消息时直接修改 `state.messages`，不再有 `callMessages` 快照投影。
+`state` 是会话状态的唯一真相。固定字段包括：
 
-内部注入消息也保留在真实历史中，并使用 `_meta` 标记：
+- `messages`：完整消息历史。
+- `usage`：跨多次 run 累计的 token 用量。
+
+中间件和工具可以扩展顶层字段，例如 `todos`、`shellCwd` 和 `readFileState`。所有需要进入 checkpoint 的扩展状态都必须可序列化。
+
+### 3.2 runtime
+
+`runtime` 是框架创建的只读视图：
 
 ```ts
-{
-  role: 'user',
-  content: 'Todo reminder...',
-  _meta: { source: 'agent', injected: true, kind: 'todo_reminder' },
+interface AgentRuntime {
+  readonly runId: string
+  readonly startedAt: number
+  readonly props: Readonly<Record<string, unknown>>
+
+  readonly provider: LLMProvider
+  readonly system: string
+  readonly tools: readonly ToolDefinition[]
+  readonly middleware: readonly AgentMiddleware[]
+  readonly signal: AbortSignal
+
+  readonly turnIndex: number
+  readonly stopReason: AgentStopReason
+  readonly lastResponse?: Readonly<ChatResponse>
+  readonly pendingToolCalls: readonly Readonly<PendingToolCall>[]
+
+  readonly emitCustomAgentEvent: (event: {
+    source: string
+    name: string
+    payload: JsonValue
+  }) => void
 }
 ```
 
-Provider 序列化时只发送模型需要的 `role/content/toolCallId` 等字段，不发送 `_meta`。
+字段按生命周期分为两类：
 
-### 3.2 props
+- 进程内能力：`provider`、`tools`、`middleware`、`signal` 和 `emitCustomAgentEvent`，resume 时重新构建。
+- 执行状态：`startedAt`、`turnIndex`、`stopReason`、`lastResponse` 和 `pendingToolCalls`，由框架内部维护。
 
-`props` 是调用方传入的只读运行环境，不进入 checkpoint。工具和中间件通过 `ctx.props.cwd` 读取当前工作目录。
+`runtime.system` 和 `runtime.tools` 是构造模型请求的默认配置。中间件要影响某一次真实模型调用时，应在 `wrapModelCall` 中改写 `ModelCallRequest.params`。
 
-### 3.3 runtime
+## 4. 内部 Runtime Handle
 
-`runtime` 是运行期能力和配置：
-
-- `runId`
-- `provider`
-- `system`
-- `tools`
-- `middleware`
-- `signal`
-- `emit(event)`
-- `notifyStateChanged(reason, keys?)`
-
-`runtime.system` 和 `runtime.tools` 是构造模型请求的默认运行配置。中间件如果只想影响某一次真实模型调用，应在 `wrapModelCall` 中改写 `ModelCallRequest.params.system`、`params.tools` 或 `params.messages`，避免把一次调用的策略写回全局 runtime。
-
-### 3.4 loopState
-
-`loopState` 是 loop 内部控制状态：
-
-- `turnIndex`
-- `stopReason`
-- `lastResponse`
-- `pendingToolCalls`
-- `stateRevision`
-
-`loopState` 通常不持久化；暂停恢复只通过 checkpoint 保存 `state`、pending tool calls、暂停原因和 `turnIndex`。
-
-## 4. State Changed 事件
-
-外部通过事件流感知 AgentState 变化，不提供额外的订阅式 store API。
+公共 `AgentRuntime` 不提供写接口。Agent Loop 内部持有一个不导出的 runtime handle：
 
 ```ts
-interface StateChangedEvent {
-  type: 'state_changed'
-  runId: string
-  revision: number
-  changedKeys: string[]
-  reason: string
+interface RuntimeHandle {
+  readonly runtime: AgentRuntime
+  readonly turnIndex: number
+  readonly stopReason: AgentStopReason
+
+  setTurnIndex(turnIndex: number): void
+  setStopReason(reason: AgentStopReason): void
+  setLastResponse(response: ChatResponse | undefined): void
+  setPendingToolCalls(calls: PendingToolCall[]): void
+  createCheckpointState(): SerializableRuntimeState
+  drainEvents(): CustomAgentEvent[]
+  hasEvents(): boolean
+  subscribeEvents(listener: () => void): () => void
+}
+```
+
+`ctx.runtime` 通过 getter 读取 handle 内部状态。runtime 对象和 pending tool calls 视图会冻结，避免中间件或工具绕过类型直接修改框架执行状态。自定义事件队列和监听器也由 handle 私有持有，不进入公共 Context 或 checkpoint。
+
+## 5. Checkpoint
+
+checkpoint 保存持久 state 和 runtime 中恢复所需的显式投影：
+
+```ts
+interface SerializableRuntimeState {
+  startedAt: number
+  turnIndex: number
+  pendingToolCalls: PendingToolCall[]
+}
+
+interface SessionCheckpoint {
   state: SerializableAgentState
+  runtime: SerializableRuntimeState
+  reason: string
+  payload?: Record<string, unknown>
+  suspendedAt: number
 }
 ```
 
-Loop 在 hook 结束、模型响应写入、工具结果写入、工具执行后、turn end、run end 等边界比较顶层 state 快照，并在有变化时发出 `state_changed`。中间件和工具也可以通过 `runtime.notifyStateChanged(reason, keys?)` 显式标记变化原因或要求尽快发出事件。
+这里不采用“自动保留 runtime 中所有可序列化字段”的策略。能序列化不代表应该恢复：
 
-## 5. 工具状态约定
+- resume 会生成新的 `runId`。
+- `stopReason` 描述上一次为什么结束，不作为新 run 的初始停止原因。
+- `lastResponse` 已经写入 `state.messages`，不重复保存。
+- provider、tools、middleware、signal 和 props 由 Agent 配置及 resume 入参重建。
 
-工具执行 Context 与中间件一致，并附加工具调用字段：
+`startedAt` 表示完整执行链的起点，resume 后继续沿用。
+
+## 6. 自定义 Agent 事件
+
+Core 不再比较 `AgentState` 快照，也不推断哪些业务变化需要暴露。中间件在理解自身业务语义的位置调用 `runtime.emitCustomAgentEvent()`，只发送外部消费者需要的可序列化投影：
 
 ```ts
-interface ToolCallContext extends RunContext {
-  toolCallId: string
-  toolName: string
-  toolInput: Record<string, unknown>
+interface CustomAgentEvent<TPayload = JsonValue> {
+  type: 'custom'
+  runId: string
+  turnIndex: number
+  source: string
+  name: string
+  payload: TPayload
 }
 ```
 
-内置工具使用顶层 state：
+`runId` 和 `turnIndex` 由框架在发送时补齐，payload 会在进入队列时复制。Loop 在等待异步 hook、wrapper、stream 和工具执行时持续转发队列，因此 `started` 一类事件可以在对应异步工作完成前被外部观察到。
 
-- `bash`：`state.shellCwd`
-- `read_file` / `edit_file` / `write_file`：`state.readFileState`
-- `write_todos`：`state.todos`
+自定义事件不是状态持久化协议。checkpoint 仍保存完整 `state + runtime` 投影；正常结束时 `agent_run_end.state` 携带最终的完整可序列化 state。业务中间件只应为实时展示、通知或可观测性发送必要字段。
 
-## 6. 流程图
+## 7. 执行流程
 
 ```mermaid
 flowchart TD
-  U["调用方输入 state/config/props"] --> C["构造 RunContext"]
-  C --> BA["beforeAgent"]
-  BA --> BM["beforeModel 修改 state/messages"]
-  BM --> MR["构造 ModelCallRequest"]
-  MR --> WM["wrapModelCall 改写 params"]
-  WM --> P["Provider 使用 request.params 调用模型"]
-  P --> AM["afterModel 读取 loopState.lastResponse"]
-  AM --> M["写入 assistant message 与 usage"]
-  M --> SC["flush state_changed"]
-  SC --> T{"有工具调用?"}
-  T -- 否 --> END["turn_end / agent_run_end"]
-  T -- 是 --> TRQ["构造 ToolCallRequest"]
-  TRQ --> WT["wrapToolCall 改写 toolInput 或拦截"]
-  WT --> X["工具收到派生 ToolCallContext"]
-  X --> TM["工具修改 state 顶层扩展字段"]
-  TM --> TR["写入 tool message"]
-  TR --> SC
-  SC --> BM
+  U["调用方输入 state/config/props"] --> H["创建 runtime handle"]
+  H --> C["构造 RunContext(state/runtime)"]
+  C --> BA["beforeAgent 读取只读 runtime"]
+  BA --> BM["beforeModel 修改 state"]
+  BM --> MR["从 state/runtime 构造 ModelCallRequest"]
+  MR --> P["Provider 调用"]
+  P --> LR["handle 写入 lastResponse"]
+  LR --> AM["afterModel 读取 runtime.lastResponse"]
+  AM --> T{"存在工具调用?"}
+  T -- "是" --> PT["handle 写入 pendingToolCalls"]
+  PT --> X["执行工具"]
+  X --> CP["暂停时保存 state + runtime 投影"]
+  T -- "否" --> END["结束 run"]
 ```

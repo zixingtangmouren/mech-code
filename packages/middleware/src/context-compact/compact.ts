@@ -3,8 +3,9 @@ import type { AgentMessage, AssistantContentBlock, RunContext } from '@mech-code
 import { getContextCompactState } from './state.js'
 import { countTokens, resolveContextWindow } from './tokens.js'
 import {
-  CONTEXT_COMPACT_STATE_KEY,
+  CONTEXT_COMPACT_EVENT_SOURCE,
   type CompactOptions,
+  type ContextCompactMode,
   type ContextCompactMiddlewareOptions,
   type SummarySource,
   type SummarySourceResult,
@@ -80,49 +81,90 @@ export async function compactContext(
   if (stateEntries.length === 0 || messagesToSummarize.length === 0) return false
 
   const estimatedBefore = countTokens(messagesToSummarize, ctx, options)
+  const mode = getCompactMode(compact.source)
+  ctx.runtime.emitCustomAgentEvent({
+    source: CONTEXT_COMPACT_EVENT_SOURCE,
+    name: 'started',
+    payload: { mode },
+  })
   let summaryText: string
   try {
     summaryText = await buildSummary(ctx, options, messagesToSummarize)
-  } catch {
+  } catch (error) {
+    emitCompactFailed(ctx, mode, error)
     return false
   }
 
-  const summaryId = `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  const summaryMessage = new UserMessage(
-    `${options.summary?.prefix ?? 'Context summary:'}\n\n${summaryText}`,
-    {
-      metadata: {
-        source: 'agent',
-        injected: true,
-        kind: 'context_summary',
-        contextCompact: { summaryId },
+  try {
+    const summaryId = `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const summaryMessage = new UserMessage(
+      `${options.summary?.prefix ?? 'Context summary:'}\n\n${summaryText}`,
+      {
+        metadata: {
+          source: 'agent',
+          injected: true,
+          kind: 'context_summary',
+          contextCompact: { summaryId },
+        },
       },
-    },
-  )
+    )
 
-  for (const entry of stateEntries) {
-    entry.message.metadata.contextCompact = {
-      ...readContextCompactMetadata(entry.message.metadata),
-      compressed: true,
-      summaryId,
+    for (const entry of stateEntries) {
+      entry.message.metadata.contextCompact = {
+        ...readContextCompactMetadata(entry.message.metadata),
+        compressed: true,
+        summaryId,
+      }
+      ctx.state.messages[entry.index] = entry.message
     }
-    ctx.state.messages[entry.index] = entry.message
-  }
-  ctx.state.messages.push(summaryMessage)
+    ctx.state.messages.push(summaryMessage)
 
-  const estimatedAfter = countTokens(getVisibleMessages(ctx.state.messages), ctx, options)
-  state.summaries.push({
-    id: summaryId,
-    turnIndex: ctx.loopState.turnIndex,
-    source: compact.source,
-    summaryMessageId: summaryId,
-    compressedMessageCount: stateEntries.length,
-    estimatedInputTokensBefore: estimatedBefore,
-    estimatedInputTokensAfter: estimatedAfter,
-    createdAt: Date.now(),
+    const estimatedAfter = countTokens(getVisibleMessages(ctx.state.messages), ctx, options)
+    const summaryRecord = {
+      id: summaryId,
+      turnIndex: ctx.runtime.turnIndex,
+      source: compact.source,
+      summaryMessageId: summaryId,
+      compressedMessageCount: stateEntries.length,
+      estimatedInputTokensBefore: estimatedBefore,
+      estimatedInputTokensAfter: estimatedAfter,
+      createdAt: Date.now(),
+    }
+    state.summaries.push(summaryRecord)
+    ctx.runtime.emitCustomAgentEvent({
+      source: CONTEXT_COMPACT_EVENT_SOURCE,
+      name: 'completed',
+      payload: {
+        mode,
+        summaryId,
+        compressedMessageCount: summaryRecord.compressedMessageCount,
+        estimatedInputTokensBefore: estimatedBefore,
+        estimatedInputTokensAfter: estimatedAfter,
+      },
+    })
+    return true
+  } catch (error) {
+    emitCompactFailed(ctx, mode, error)
+    throw error
+  }
+}
+
+function getCompactMode(source: CompactOptions['source']): ContextCompactMode {
+  if (source === 'auto_compact') return 'proactive'
+  if (source === 'reactive_compact') return 'reactive'
+  return 'manual'
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function emitCompactFailed(ctx: RunContext, mode: ContextCompactMode, error: unknown): void {
+  ctx.runtime.emitCustomAgentEvent({
+    source: CONTEXT_COMPACT_EVENT_SOURCE,
+    name: 'failed',
+    payload: { mode, error: getErrorMessage(error) },
   })
-  ctx.runtime.notifyStateChanged('context_compact', ['messages', CONTEXT_COMPACT_STATE_KEY])
-  return true
 }
 
 async function buildSummary(
@@ -177,8 +219,6 @@ function buildSummaryPrompt(options: ContextCompactMiddlewareOptions): string {
 }
 
 function assistantText(message: Extract<AgentMessage, { role: 'assistant' }>): string {
-  if (typeof message.content === 'string') return message.content.trim()
-
   return message.content
     .filter(
       (block): block is Extract<AssistantContentBlock, { type: 'text' }> => block.type === 'text',

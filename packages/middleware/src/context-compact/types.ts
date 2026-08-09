@@ -1,6 +1,14 @@
-import type { AgentMessage, Awaitable, LLMProvider, RunContext } from '@mech-code/core'
+import type {
+  AgentEvent,
+  AgentMessage,
+  Awaitable,
+  CustomAgentEvent,
+  LLMProvider,
+  RunContext,
+} from '@mech-code/core'
 
 export const CONTEXT_COMPACT_STATE_KEY = 'contextCompact'
+export const CONTEXT_COMPACT_EVENT_SOURCE = 'context-compact'
 
 export interface ContextCompactMiddlewareOptions {
   summaryProvider?: LLMProvider
@@ -67,3 +75,55 @@ export interface CompactOptions {
 }
 
 export type ResolvedReactiveCompactOptions = Required<ReactiveCompactOptions>
+
+export type ContextCompactMode = 'proactive' | 'reactive' | 'manual'
+
+export type ContextCompactStartedEvent = CustomAgentEvent<{ mode: ContextCompactMode }> & {
+  source: typeof CONTEXT_COMPACT_EVENT_SOURCE
+  name: 'started'
+}
+
+export type ContextCompactCompletedEvent = CustomAgentEvent<{
+  mode: ContextCompactMode
+  summaryId: string
+  compressedMessageCount: number
+  estimatedInputTokensBefore: number
+  estimatedInputTokensAfter: number
+}> & {
+  source: typeof CONTEXT_COMPACT_EVENT_SOURCE
+  name: 'completed'
+}
+
+export type ContextCompactFailedEvent = CustomAgentEvent<{
+  mode: ContextCompactMode
+  error: string
+}> & {
+  source: typeof CONTEXT_COMPACT_EVENT_SOURCE
+  name: 'failed'
+}
+
+export type ContextCompactEvent =
+  | ContextCompactStartedEvent
+  | ContextCompactCompletedEvent
+  | ContextCompactFailedEvent
+
+export function isContextCompactEvent(event: AgentEvent): event is ContextCompactEvent {
+  if (event.type !== 'custom' || event.source !== CONTEXT_COMPACT_EVENT_SOURCE) return false
+  if (event.name !== 'started' && event.name !== 'completed' && event.name !== 'failed')
+    return false
+  if (!event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload))
+    return false
+  if (!isContextCompactMode(event.payload.mode)) return false
+  if (event.name === 'started') return true
+  if (event.name === 'failed') return typeof event.payload.error === 'string'
+  return (
+    typeof event.payload.summaryId === 'string' &&
+    typeof event.payload.compressedMessageCount === 'number' &&
+    typeof event.payload.estimatedInputTokensBefore === 'number' &&
+    typeof event.payload.estimatedInputTokensAfter === 'number'
+  )
+}
+
+function isContextCompactMode(value: unknown): value is ContextCompactMode {
+  return value === 'proactive' || value === 'reactive' || value === 'manual'
+}

@@ -8,9 +8,10 @@ import { AssistantMessage } from '../../message/message.js'
 // 测试用的最小执行上下文
 const mockCtx: ToolRunContext = {
   state: { messages: [], usage: { inputTokens: 0, outputTokens: 0 } },
-  props: Object.freeze({ cwd: '/tmp' }),
   runtime: {
     runId: 'run-test',
+    startedAt: 0,
+    props: Object.freeze({ cwd: '/tmp' }),
     provider: {
       name: 'mock',
       chat: async () => ({
@@ -32,14 +33,11 @@ const mockCtx: ToolRunContext = {
     tools: [],
     middleware: [],
     signal: new AbortController().signal,
-    emit() {},
-    notifyStateChanged() {},
-  },
-  loopState: {
     turnIndex: 0,
     stopReason: 'end_turn',
+    lastResponse: undefined,
     pendingToolCalls: [],
-    stateRevision: 0,
+    emitCustomAgentEvent() {},
   },
   toolCallId: 'tool-call-test',
   toolName: 'test_tool',

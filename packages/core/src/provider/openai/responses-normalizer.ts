@@ -12,6 +12,7 @@ export interface OpenAIResponsesNonStreamResponse {
   }
   status?: string
   incomplete_details?: { reason?: string | null } | null
+  error?: { code?: string | null; type?: string | null; message?: string } | null
 }
 
 export type OpenAIResponsesOutputItem =
@@ -72,6 +73,10 @@ export type OpenAIResponsesStreamEvent =
     }
   | {
       type: 'response.completed'
+      response?: OpenAIResponsesNonStreamResponse
+    }
+  | {
+      type: 'response.incomplete'
       response?: OpenAIResponsesNonStreamResponse
     }
 
@@ -176,6 +181,7 @@ export class OpenAIResponsesStreamNormalizer implements StreamNormalizer<OpenAIR
         break
 
       case 'response.completed':
+      case 'response.incomplete':
         if (chunk.response?.usage) {
           this.inputTokens = chunk.response.usage.input_tokens ?? 0
           this.outputTokens = chunk.response.usage.output_tokens ?? 0

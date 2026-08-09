@@ -31,4 +31,6 @@ pnpm lint:fix     # 自动修复 lint 问题
 - 代码提交前会自动运行 lint-staged（ESLint + Prettier）
 - 使用 pnpm workspace 管理 monorepo，包间依赖通过 workspace 协议引用
 - 测试框架为 Vitest，测试文件统一放在源文件同级的 `__tests__/` 目录下（`__tests__/*.test.ts`）
+- 开发或调整功能逻辑时，必须同步检查并更新 `docs/` 中已经过时的相关文档，确保设计说明与当前实现一致
+- 每个新增或对外开放的能力都必须编写测试用例，并采用 TDD 模式开发：先编写会失败的测试，再完成实现使测试通过，最后在测试保护下重构
 - **写完代码后一定要执行一下 pnpm typecheck、pnpm lint、pnpm test、pnpm build 指令进行测试**

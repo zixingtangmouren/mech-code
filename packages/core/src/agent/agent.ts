@@ -132,15 +132,7 @@ function getLastAssistantText(state: RunParams['state']): string {
     const msg = messages[i]
     if (!msg) continue
     if (msg.role === 'assistant') {
-      const content = msg.content
-      if (typeof content === 'string') return content
-      if (Array.isArray(content)) {
-        const blocks = content as Array<{ type: string; text?: string }>
-        return blocks
-          .filter((b) => b.type === 'text')
-          .map((b) => b.text ?? '')
-          .join('')
-      }
+      return msg.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
     }
   }
   return ''

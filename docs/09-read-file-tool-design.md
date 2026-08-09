@@ -274,7 +274,7 @@ if (IMAGE_EXTENSIONS.has(ext)) {
 }
 ```
 
-> 图片数据通过 `metadata` 传递给 provider 层，由 provider 负责转换为对应 API 的 multimodal 格式（如 Anthropic 的 image content block）。具体的 provider 适配不在本 tool 实现范围内。
+> 图片数据先通过 `ToolOutput.metadata` 交给 Agent Loop。Loop 构造 `ToolMessage` 时将其提升为显式的 `image` 字段，再由 Provider 转换为对应 API 的多模态格式（如 Anthropic 的 image content block）。Provider 不直接读取工具输出 metadata。
 
 ---
 
@@ -390,7 +390,7 @@ interface ReadFileConfig {
 
 ### Phase 3 — 多模态支持
 
-- [ ] 图片文件读取（base64 + metadata）
+- [ ] 图片文件读取（base64 + ToolOutput metadata）
 - [ ] Provider 层适配图片 content block
 - [ ] 大图压缩（可选依赖 sharp）
 - [ ] PDF 支持（可选，优先级低）
@@ -415,12 +415,12 @@ interface ToolExecContext {
 
 ### Provider 层配合
 
-图片输出需要 provider 将 `metadata.type === 'image'` 的 tool result 转换为对应 API 格式：
+图片输出由 Agent Loop 读取 `ToolOutput.metadata.type === 'image'`，构造带 `image` 字段的 `ToolMessage`；Provider 再将该显式消息字段转换为对应 API 格式：
 
 - **Anthropic**：`{ type: 'image', source: { type: 'base64', data, media_type } }`
 - **OpenAI**：目前 tool result 不支持 image，需将图片作为 user message 注入（或降级为文本描述）
 
-这部分改造属于 provider/serializer 层，不在 tool 本身实现范围内，但需要在 `ToolOutput` 的 `metadata` 中约定好数据格式。
+工具只需遵守 `ToolOutput.metadata` 的图片输出约定；从工具输出提升为消息语义由 Agent Loop 负责，厂商格式差异由 Provider serializer 负责。
 
 ---
 

@@ -1,4 +1,9 @@
-import type { AssistantContentBlock, UserContentBlock } from '@mech-code/shared'
+import type {
+  AssistantContentBlock,
+  ImageSource,
+  Message,
+  UserContentBlock,
+} from '@mech-code/shared'
 
 export type MessageMetadata = Record<string, unknown>
 
@@ -6,15 +11,11 @@ export interface MessageOptions {
   metadata?: MessageMetadata
 }
 
-export type SerializedAgentMessage =
-  | ({ role: 'system'; content: string } & { metadata?: MessageMetadata })
-  | ({ role: 'user'; content: string | UserContentBlock[] } & { metadata?: MessageMetadata })
-  | ({ role: 'assistant'; content: string | AssistantContentBlock[] } & {
-      metadata?: MessageMetadata
-    })
-  | ({ role: 'tool'; toolCallId: string; toolName?: string; content: string } & {
-      metadata?: MessageMetadata
-    })
+export interface ToolMessageOptions extends MessageOptions {
+  image?: ImageSource
+}
+
+export type SerializedAgentMessage = Message & { metadata?: MessageMetadata }
 
 type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -44,26 +45,41 @@ export class SystemMessage extends BaseMessage<'system', string> {
   }
 }
 
-export class UserMessage extends BaseMessage<'user', string | UserContentBlock[]> {
+export class UserMessage extends BaseMessage<'user', UserContentBlock[]> {
   constructor(content: string | UserContentBlock[], options?: MessageOptions) {
-    super('user', content, options)
+    super(
+      'user',
+      typeof content === 'string' ? [{ type: 'text', text: content }] : content,
+      options,
+    )
   }
 }
 
-export class AssistantMessage extends BaseMessage<'assistant', string | AssistantContentBlock[]> {
+export class AssistantMessage extends BaseMessage<'assistant', AssistantContentBlock[]> {
   constructor(content: string | AssistantContentBlock[], options?: MessageOptions) {
-    super('assistant', content, options)
+    super(
+      'assistant',
+      typeof content === 'string' ? [{ type: 'text', text: content }] : content,
+      options,
+    )
   }
 }
 
 export class ToolMessage extends BaseMessage<'tool', string> {
   readonly toolCallId: string
   readonly toolName: string
+  readonly image?: ImageSource
 
-  constructor(toolCallId: string, toolName: string, content: string, options?: MessageOptions) {
+  constructor(
+    toolCallId: string,
+    toolName: string,
+    content: string,
+    options: ToolMessageOptions = {},
+  ) {
     super('tool', content, options)
     this.toolCallId = toolCallId
     this.toolName = toolName
+    this.image = options.image
   }
 
   override toJSON(): SerializedAgentMessage {
@@ -72,6 +88,7 @@ export class ToolMessage extends BaseMessage<'tool', string> {
       toolCallId: this.toolCallId,
       toolName: this.toolName,
       content: this.content,
+      ...(this.image ? { image: this.image } : {}),
       ...(Object.keys(this.metadata).length > 0 ? { metadata: this.metadata } : {}),
     }
   }
@@ -95,6 +112,7 @@ export function deserializeAgentMessage(message: SerializedAgentMessage): AgentM
     case 'tool':
       return new ToolMessage(message.toolCallId, message.toolName ?? 'unknown', message.content, {
         metadata,
+        image: message.image,
       })
   }
 }

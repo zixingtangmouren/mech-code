@@ -74,14 +74,16 @@ controller.abort('user_interrupt')
 interface SessionCheckpoint {
   /** 中断时的完整会话状态（含已执行工具的结果） */
   state: SerializableAgentState
-  /** 中断时未完成的 tool calls（恢复时从这里继续执行） */
-  pendingToolCalls: PendingToolCall[]
+  /** 恢复执行所需的可序列化 runtime 投影 */
+  runtime: {
+    startedAt: number
+    turnIndex: number
+    pendingToolCalls: PendingToolCall[]
+  }
   /** 中断原因（如 'approval_required'、'user_abort'、'timeout'） */
   reason: string
   /** 附带的业务数据 */
   payload?: Record<string, unknown>
-  /** 中断时的轮次索引 */
-  turnIndex: number
   /** 时间戳 */
   suspendedAt: number
 }
@@ -93,7 +95,7 @@ interface PendingToolCall {
 }
 ```
 
-> **注意**：当 `pendingToolCalls` 为空数组时，表示中断发生在非工具执行阶段（如循环顶部的 abort 检查）。恢复时 Loop 将直接进入下一轮循环。
+> **注意**：当 `runtime.pendingToolCalls` 为空数组时，表示中断发生在非工具执行阶段（如循环顶部的 abort 检查）。恢复时 Loop 将直接进入下一轮循环。
 
 ### 2.3 ResumeParams
 
@@ -209,7 +211,7 @@ agent.resume(checkpoint, { decisions })
   4. 继续 model call → tool dispatch → ...
 ```
 
-> 当 `pendingToolCalls` 为空（来自无 pending 的 abort 恢复场景），阶段 2 跳过，直接进入循环。
+> 当 `checkpoint.runtime.pendingToolCalls` 为空（来自无 pending 的 abort 恢复场景），阶段 2 跳过，直接进入循环。
 
 ---
 
@@ -303,11 +305,9 @@ type ToolBatchResult =
 async function executeToolBatch(
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
   ctx: RunContext,
+  runtimeHandle: RuntimeHandle,
   toolMap: Map<string, Tool>,
   wrappedToolCall: ToolCallFn,
-  state: AgentState,
-  signal: AbortSignal,
-  turnIndex: number,
 ): Promise<ToolBatchResult> {
   const parallelCalls = toolCalls.filter(c => toolMap.get(c.name)?.flags.parallelSafe)
   const sequentialCalls = toolCalls.filter(c => !toolMap.get(c.name)?.flags.parallelSafe)
@@ -330,7 +330,13 @@ async function executeToolBatch(
 主循环中的调用方式极为简洁：
 
 ```ts
-const batchResult = await executeToolBatch(toolCalls, ctx, toolMap, wrappedToolCall, state, signal, turnIndex)
+const batchResult = await executeToolBatch(
+  toolCalls,
+  ctx,
+  runtimeHandle,
+  toolMap,
+  wrappedToolCall,
+)
 
 if (batchResult.status === 'suspended') {
   yield batchResult.event
@@ -353,23 +359,19 @@ for (const call of toolCalls) {
 
 ```ts
 interface MainLoopContext {
-  state: AgentState
-  startTurnIndex: number
   maxTurns: number
-  system: string
-  toolDefinitions: ToolDefinition[]
   toolMap: Map<string, Tool>
   pipeline: MiddlewarePipeline
   wrappedToolCall: ToolCallFn
   wrappedModelCall: ModelCallFn
-  ctx: RunContext & { turnIndex: number }
-  signal: AbortSignal
+  ctx: RunContext
+  runtimeHandle: RuntimeHandle
 }
 
 async function* runMainLoop(
   loopCtx: MainLoopContext,
 ): AsyncGenerator<AgentEvent, { stopReason: RunResult['stopReason']; turnIndex: number }> {
-  // while (turnIndex < maxTurns):
+  // while (runtimeHandle.turnIndex < maxTurns):
   //   1. abort 检查
   //   2. PREPARE（callMessages 快照、beforeModel hooks）
   //   3. MODEL CALL（流式输出）
@@ -379,10 +381,10 @@ async function* runMainLoop(
 }
 ```
 
-两个入口函数只需设置不同的 `startTurnIndex`：
+两个入口函数通过 runtime handle 设置不同的起始状态：
 
-- `runLoop` → `startTurnIndex: 0`
-- `runLoopFromCheckpoint` → `startTurnIndex: resumeTurnIndex + 1`（处理完 pending calls 后）
+- `runLoop` → 创建 `turnIndex: 0` 的新 runtime handle
+- `runLoopFromCheckpoint` → 从 `checkpoint.runtime` 恢复 handle，处理完 pending calls 后设置 `turnIndex + 1`
 
 ### 5.4 initLoopInfra —— 公共初始化
 
@@ -408,7 +410,7 @@ export async function* runLoop(params, config): AsyncGenerator<AgentEvent> {
   yield { type: 'agent_run_start', ... }
   try {
     await pipeline.runBeforeAgent(ctx)
-    const result = yield* runMainLoop({ startTurnIndex: 0, ... })
+    const result = yield* runMainLoop({ runtimeHandle, ... })
     stopReason = result.stopReason
   } catch { ... } finally { await pipeline.runAfterAgent(ctx) }
   yield { type: 'agent_run_end', ... }
@@ -424,7 +426,8 @@ export async function* runLoopFromCheckpoint(params, config): AsyncGenerator<Age
     // 阶段 1：处理 pending tool calls（approve / deny / modify）
     for (const call of pendingToolCalls) { ... }
     // 阶段 2：进入正常循环
-    const result = yield* runMainLoop({ startTurnIndex: resumeTurnIndex + 1, ... })
+    runtimeHandle.setTurnIndex(checkpoint.runtime.turnIndex + 1)
+    const result = yield* runMainLoop({ runtimeHandle, ... })
     stopReason = result.stopReason
   } catch { ... } finally { await pipeline.runAfterAgent(ctx) }
   yield { type: 'agent_run_end', ... }
@@ -468,7 +471,7 @@ class PermissionMiddleware extends Middleware {
 
 ```ts
 const state = createAgentState()
-state.messages.push({ role: 'user', content: '删除 temp/ 目录下所有文件' })
+state.messages.push(new UserMessage('删除 temp/ 目录下所有文件'))
 
 let checkpoint: SessionCheckpoint | undefined
 
@@ -479,7 +482,7 @@ for await (const event of agent.run({ state })) {
   if (event.type === 'suspended') {
     checkpoint = event.checkpoint
     console.log(`\n⏸ 暂停: ${event.reason}`)
-    console.log('待审批操作:', event.checkpoint.pendingToolCalls)
+    console.log('待审批操作:', event.checkpoint.runtime.pendingToolCalls)
   }
 }
 
@@ -488,7 +491,7 @@ if (checkpoint) {
   const userChoice = await promptUser('是否批准？(y/n)')
 
   const decisions: Record<string, ToolCallDecision> = {}
-  for (const call of checkpoint.pendingToolCalls) {
+  for (const call of checkpoint.runtime.pendingToolCalls) {
     decisions[call.id] =
       userChoice === 'y' ? { action: 'approve' } : { action: 'deny', reason: '用户拒绝' }
   }
@@ -513,7 +516,7 @@ for await (const event of agent.run({ state })) {
 
 // 进程 B（可能是重启后）：从文件恢复
 const checkpoint = JSON.parse(await fs.readFile('checkpoint.json', 'utf-8'))
-const decisions = await collectUserDecisions(checkpoint.pendingToolCalls)
+const decisions = await collectUserDecisions(checkpoint.runtime.pendingToolCalls)
 
 for await (const event of agent.resume({ checkpoint, decisions })) {
   // 从断点继续执行
@@ -602,5 +605,6 @@ tool_calls: [A(并行), B(并行,需审批), C(串行)]
 
 ### SessionCheckpoint 的序列化要求
 
-- `state.messages`、`state.usage`、`state.store` 都是 JSON 安全的
+- `state.messages`、`state.usage` 和顶层扩展状态都必须是 JSON 安全的
+- `runtime` 只保存 `startedAt`、`turnIndex` 和 `pendingToolCalls`；provider、tools、middleware、signal 和 props 会在 resume 时重新构建
 - 提供 `serializeAgentState()` / `deserializeAgentState()` 辅助函数

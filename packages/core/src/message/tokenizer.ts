@@ -20,7 +20,6 @@ export function estimateMessageTokens(msg: AgentMessage): number {
       return overhead + estimateTokens(msg.content)
 
     case 'user': {
-      if (typeof msg.content === 'string') return overhead + estimateTokens(msg.content)
       return (
         overhead +
         msg.content.reduce((sum, block) => {
@@ -32,7 +31,6 @@ export function estimateMessageTokens(msg: AgentMessage): number {
     }
 
     case 'assistant': {
-      if (typeof msg.content === 'string') return overhead + estimateTokens(msg.content)
       return (
         overhead +
         msg.content.reduce((sum, block) => {

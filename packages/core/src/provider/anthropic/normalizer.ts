@@ -29,7 +29,6 @@ type AnthropicRawChunk =
     }
   | { type: 'message_stop' }
   | { type: 'ping' }
-  | { type: 'error'; error: { type: string; message: string } }
 
 // === Block 状态（判别联合）===
 
@@ -116,7 +115,6 @@ export class AnthropicStreamNormalizer implements StreamNormalizer<AnthropicRawC
 
       case 'message_stop':
       case 'ping':
-      case 'error':
         break
     }
 

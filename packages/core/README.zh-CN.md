@@ -189,6 +189,7 @@ interface ProviderConfig {
   baseUrl?: string
   protocol?: 'chat' | 'responses'
   headers?: Record<string, string>
+  timeoutMs?: number
   defaultParams?: {
     temperature?: number
     maxTokens?: number
@@ -199,12 +200,12 @@ interface ProviderConfig {
 }
 ```
 
-`protocol` 适用于 OpenAI 风格的 Provider，默认为 `chat`。代理或自定义端点通过 `baseUrl` 设置。直接调用 `provider.chat()` 或 `provider.stream()` 时，单次调用的 `modelParams` 会浅合并覆盖 `defaultParams`。
+`protocol` 适用于 OpenAI 风格的 Provider，默认为 `chat`。代理或自定义端点通过 `baseUrl` 设置。请求默认在 300000 毫秒后超时；`timeoutMs` 可以设置 Provider 默认值，也可以在单次调用中覆盖。直接调用 `provider.chat()` 或 `provider.stream()` 时，单次调用的 `modelParams` 会浅合并覆盖 `defaultParams`。
 
 ```ts
 const response = await openai.chat(
   { messages: [new UserMessage('打个招呼。')] },
-  { modelParams: { temperature: 0.2, maxTokens: 100 } },
+  { modelParams: { temperature: 0.2, maxTokens: 100 }, timeoutMs: 60_000 },
 )
 
 const { stream, final, abort } = openai.stream({
@@ -239,7 +240,7 @@ const searchTool = defineTool({
   async execute({ query, path }, context) {
     return {
       content: `在 ${path} 中搜索 ${query}`,
-      metadata: { requestId: context.props.requestId },
+      metadata: { requestId: context.runtime.props.requestId },
     }
   },
 })
@@ -301,9 +302,14 @@ const loggingMiddleware = createMiddleware({
   name: 'logging',
   state: { modelCalls: 0 },
   beforeModel(ctx) {
-    ctx.state.modelCalls = Number(ctx.state.modelCalls) + 1
-    ctx.runtime.notifyStateChanged('model_call_counted', ['modelCalls'])
-    console.log('turn', ctx.loopState.turnIndex)
+    const modelCalls = Number(ctx.state.modelCalls) + 1
+    ctx.state.modelCalls = modelCalls
+    ctx.runtime.emitCustomAgentEvent({
+      source: 'logging',
+      name: 'model_call_counted',
+      payload: { modelCalls },
+    })
+    console.log('turn', ctx.runtime.turnIndex)
   },
   async wrapToolCall(request, handler) {
     const startedAt = Date.now()
@@ -335,7 +341,7 @@ const agent = createAgent({
 | `reasoning_start`、`reasoning_content`、`reasoning_end`                       | 模型推理的流式输出。        |
 | `text_start`、`text_delta`、`text_end`                                        | Assistant 文本的流式输出。  |
 | `tool_start`、`tool_input_delta`、`tool_executing`、`tool_result`、`tool_end` | 工具调用进度和结果。        |
-| `state_changed`                                                               | 可序列化的状态快照。        |
+| `custom`                                                                      | 可序列化的中间件事件。      |
 | `suspended`                                                                   | 等待外部决策的 checkpoint。 |
 
 使用可辨识联合类型的 switch 可以完整处理事件：
@@ -365,26 +371,20 @@ try {
   await agent.complete({ state })
 } catch (error) {
   if (error instanceof ProviderError) {
-    console.error(error.provider, error.code, error.retryable)
+    console.error(error.provider, error.code, error.retryable, error.requestId)
   } else {
     throw error
   }
 }
 ```
 
-| 错误码             | 可重试 |
-| ------------------ | ------ |
-| `auth_failed`      | 否     |
-| `rate_limited`     | 是     |
-| `context_too_long` | 否     |
-| `model_not_found`  | 否     |
-| `server_error`     | 是     |
-| `network_error`    | 是     |
-| `invalid_request`  | 否     |
-| `aborted`          | 否     |
-| `unknown`          | 否     |
+| 错误码                                                                                                       | 可重试 |
+| ------------------------------------------------------------------------------------------------------------ | ------ |
+| `rate_limited`、`timeout`、`overloaded`、`server_error`、`network_error`                                     | 是     |
+| `auth_failed`、`permission_denied`、`billing_error`、`quota_exceeded`、`context_too_long`、`model_not_found` | 否     |
+| `not_found`、`request_too_large`、`conflict`、`invalid_response`、`invalid_request`、`aborted`、`unknown`    | 否     |
 
-应用逻辑应读取 `error.retryable`，不要自行写死这张表。实现流式 Provider 调用的重试中间件时，还可以使用导出的 `retryStreamResult()` 辅助函数。
+厂商提供相应信息时，`ProviderError` 还会包含 `status`、`vendorCode`、`requestId` 和 `retryAfterMs`。应用逻辑应读取 `error.retryable`，不要自行写死这张表；有 `retryAfterMs` 时应优先遵循，再使用指数退避。实现流式 Provider 调用的重试中间件时，还可以使用导出的 `retryStreamResult()` 辅助函数。
 
 ## 等待人工审批
 
@@ -398,7 +398,7 @@ const sensitiveTools = new Set(['write_file', 'run_command'])
 const approvalMiddleware = createMiddleware({
   name: 'approval',
   async wrapToolCall(request, handler) {
-    if (!sensitiveTools.has(request.toolName) || request.context.props.approved === true) {
+    if (!sensitiveTools.has(request.toolName) || request.context.runtime.props.approved === true) {
       return handler(request)
     }
 
@@ -418,7 +418,10 @@ const firstRun = await agent.complete({ state })
 
 if (firstRun.stopReason === 'suspended' && firstRun.checkpoint) {
   const decisions = Object.fromEntries(
-    firstRun.checkpoint.pendingToolCalls.map((call) => [call.id, { action: 'approve' as const }]),
+    firstRun.checkpoint.runtime.pendingToolCalls.map((call) => [
+      call.id,
+      { action: 'approve' as const },
+    ]),
   )
 
   for await (const event of agent.resume({
@@ -431,7 +434,7 @@ if (firstRun.stopReason === 'suspended' && firstRun.checkpoint) {
 }
 ```
 
-每项决策可以是 `approve`、带可选原因的 `deny`，或通过 `modify` 修改工具输入。`resume()` 会从 checkpoint 重建状态、应用决策、执行剩余工具，并继续 Agent Loop。它不会修改恢复前的原始 `state` 对象；如果调用方需要持久化恢复后的状态，应消费 `state_changed` 快照或最终事件。
+每项决策可以是 `approve`、带可选原因的 `deny`，或通过 `modify` 修改工具输入。`resume()` 会从 checkpoint 重建状态、应用决策、执行剩余工具，并继续 Agent Loop。它不会修改恢复前的原始 `state` 对象；如果调用方需要持久化恢复后的最终状态，应消费 `agent_run_end.state`。
 
 ## 消息与持久化
 

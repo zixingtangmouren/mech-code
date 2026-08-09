@@ -13,15 +13,19 @@
 │  mech-code (pnpm monorepo)                               │
 │                                                          │
 │  packages/                                               │
-│  ├── @mech/core       ← SDK 核心（Agent Loop + 策略层）   │
-│  ├── @mech/cli        ← 终端产物（消费 core）             │
-│  └── @mech/shared     ← 共享类型 / 工具函数              │
+│  ├── @mech-code/shared      ← 共享协议类型 / 工具函数     │
+│  ├── @mech-code/core        ← Agent 核心框架              │
+│  ├── @mech-code/tools       ← 内置工具实现                │
+│  ├── @mech-code/middleware  ← 内置中间件实现              │
+│  └── @mech-code/cli         ← 终端产物（组装其他包）       │
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **`@mech/core`**：纯逻辑层，不依赖终端/UI，可运行在 Node.js / Bun / Edge
-- **`@mech/cli`**：终端 UI（ink）+ 配置文件加载 + 调用 core SDK
-- **`@mech/shared`**：跨包复用的类型定义和纯工具函数
+- **`@mech-code/shared`**：跨包复用的协议类型与纯工具函数
+- **`@mech-code/core`**：Agent、Provider、消息、Tool 和 Middleware 等核心协议与运行时
+- **`@mech-code/tools`**：基于 core Tool 协议实现的文件与 Shell 工具
+- **`@mech-code/middleware`**：基于 core Middleware 协议实现的上下文、工具结果与 Todo 中间件
+- **`@mech-code/cli`**：终端 UI（Ink）、配置加载及各运行时包的装配入口
 
 ---
 
@@ -100,29 +104,32 @@ interface ProviderConfig {
 
 ## 3. SDK 对外 API
 
-### 3.1 Messages 数组（支持多模态）
+### 3.1 AgentMessage（支持多模态）
 
 ```ts
-type ContentPart =
+type UserContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: ImageSource }
   | { type: 'file'; data: Uint8Array; mediaType: string }
+
+type AssistantContentBlock =
+  | { type: 'thinking'; text: string }
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
 
 type ImageSource =
   | { type: 'base64'; mediaType: string; data: string }
   | { type: 'url'; url: string }
 
-type Message =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | ContentPart[] }
-  | { role: 'tool'; toolCallId: string; content: string }
+type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ```
+
+`UserMessage` 和 `AssistantMessage` 构造器接受字符串简写，但创建后的 `content` 始终是对应的内容块数组。Agent Loop、middleware 和 Provider 都使用这一种规范形态。
 
 ### 3.2 调用方式
 
 ```ts
-import { createAgent } from '@mech/core'
+import { UserMessage, createAgent, createAgentState } from '@mech-code/core'
 
 const agent = createAgent({
   provider: { baseUrl: '...', model: '...', apiKey: '...' },
@@ -131,32 +138,23 @@ const agent = createAgent({
   middleware: [...],
 })
 
-// 流式：用户自行构建上下文
-const events = agent.run({
-  messages: [
-    { role: 'user', content: '这张图片里有什么？' },
-    { role: 'assistant', content: '这是一段代码截图...' },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: '帮我重构这个函数' },
-        { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: '...' } },
-      ],
-    },
-  ],
-  maxTurns: 10,
-  signal: abortController.signal,
-})
+const state = createAgentState()
+state.messages.push(
+  new UserMessage([
+    { type: 'text', text: '帮我分析这张图片' },
+    { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: '...' } },
+  ]),
+)
+
+const events = agent.run({ state, config: { maxTurns: 10 } })
 
 for await (const event of events) {
   // 处理事件
 }
 
-// 非流式快捷方法
-const result = await agent.complete({
-  messages: [{ role: 'user', content: '一句话问答' }],
-})
-// result.text / result.usage / result.messages
+state.messages.push(new UserMessage('继续分析'))
+const result = await agent.complete({ state })
+// result.text / result.usage / result.stopReason
 ```
 
 ---
@@ -191,6 +189,8 @@ agent_run_start
 │   ├── mcp_result
 │   └── mcp_end
 │
+├── custom                  (中间件定义的可序列化事件)
+│
 ├── turn_end               (单轮结束，可能有下一轮)
 ├── turn_start             (新一轮开始)
 │
@@ -211,7 +211,17 @@ type AgentRunEndEvent = {
   runId: string
   usage: Usage
   messages: Message[]
-  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort'
+  state: SerializableAgentState
+  stopReason: 'end_turn' | 'max_turns' | 'error' | 'abort' | 'suspended'
+}
+
+type CustomAgentEvent<TPayload = JsonValue> = {
+  type: 'custom'
+  runId: string
+  turnIndex: number
+  source: string
+  name: string
+  payload: TPayload
 }
 
 // === Reasoning ===
@@ -591,80 +601,120 @@ Skill = **预定义 system prompt + tools 组合 + 可选 middleware + 执行策
 
 ---
 
-## 9. @mech/core 目录结构
+## 9. @mech-code/core 目录结构
 
 ```
 packages/core/src/
 ├── agent/
-│   ├── agent.ts                # Agent 类，对外入口
-│   ├── loop.ts                 # Loop Engine（基础设施）
-│   └── types.ts                # RunParams, RunResult
+│   ├── agent.ts                # Agent 对外接口
+│   ├── hitl.ts                 # 中断恢复与 checkpoint
+│   ├── loop.ts                 # Agent Loop
+│   ├── state.ts                # Agent 状态变更
+│   └── types.ts                # Agent 运行参数与结果类型
+├── events/
+│   └── emitter.ts              # AgentEvent 异步事件流
+├── mcp/
+│   ├── client.ts               # MCP stdio 客户端
+│   └── types.ts                # MCP 协议类型
+├── message/
+│   ├── accumulator.ts          # 流式响应累积
+│   ├── builder.ts              # 消息构建
+│   ├── message.ts              # 消息类、构造规范化与序列化
+│   └── tokenizer.ts            # token 估算
 ├── middleware/
-│   ├── types.ts                # AgentMiddleware 接口
-│   ├── pipeline.ts             # middleware 执行器（洋葱模型）
-│   ├── context-manager.ts      # 内置：上下文窗口管理
-│   ├── tool-constraints.ts     # 内置：工具约束
-│   ├── result-processor.ts     # 内置：结果截断
-│   ├── attachment-injector.ts  # 内置：动态上下文注入
-│   └── permission-guard.ts     # 内置：权限审批
+│   ├── pipeline.ts             # 中间件管道与 wrap 链
+│   └── types.ts                # AgentMiddleware 接口
 ├── provider/
-│   ├── types.ts                # LLMProvider 接口
-│   ├── anthropic.ts
-│   ├── openai.ts
-│   └── openai-compatible.ts
+│   ├── anthropic/              # Anthropic Provider 与协议转换
+│   ├── openai/                 # OpenAI Chat/Responses Provider
+│   ├── openai-compatible/      # OpenAI 兼容 Provider
+│   ├── base.ts                 # Provider 基类
+│   ├── errors.ts               # Provider 错误
+│   ├── stream-result.ts        # 流式结果封装
+│   └── types.ts                # Provider 接口
+├── skills/
+│   ├── registry.ts             # Skill 注册表
+│   └── types.ts                # Skill 类型
 ├── tools/
 │   ├── types.ts                # Tool 接口
 │   ├── registry.ts             # 注册中心
-│   └── builtin/                # 可选内置工具
-│       ├── read-file.ts
-│       ├── write-file.ts
-│       ├── search.ts
-│       └── shell.ts
-├── mcp/
-│   ├── client.ts               # MCP client（spawn + JSON-RPC）
-│   └── adapter.ts              # MCP tools → Tool 接口适配
-├── skills/
-│   ├── types.ts
-│   └── registry.ts
-├── message/
-│   ├── types.ts                # Message, ContentPart
-│   ├── builder.ts              # 组装请求 payload
-│   └── tokenizer.ts            # token 计数
-├── events/
-│   ├── types.ts                # AgentEvent union type
-│   └── emitter.ts              # AsyncIterable 产出器
+│   └── define.ts               # defineTool 辅助函数
 └── index.ts                    # 公开导出
 ```
 
+`__tests__/` 与相应模块同级放置，未在目录树中重复展开。
+
 ---
 
-## 10. @mech/cli 目录结构
+## 10. @mech-code/cli 目录结构
 
 ```
 packages/cli/src/
 ├── index.ts                    # CLI 入口
 ├── commands/                   # commander 子命令
 │   ├── chat.ts
-│   ├── config.ts
 │   └── index.ts
 ├── config/                     # 配置文件加载/合并
 │   ├── loader.ts
 │   ├── schema.ts
-│   └── defaults.ts
+│   └── middleware.ts           # CLI 中间件装配
+├── prompts/
+│   └── system.ts               # 默认系统提示词
 ├── ui/                         # ink 终端 UI
 │   ├── App.tsx
-│   └── components/
-│       ├── MessageList.tsx
-│       ├── InputBox.tsx
-│       ├── ToolCallView.tsx
-│       └── Spinner.tsx
+│   ├── commands.ts             # UI 命令解析
+│   ├── theme.ts                # 终端主题
+│   ├── hooks/
+│   │   └── useEventAggregator.ts
+│   └── components/             # 会话、输入、状态与消息组件
 └── adapters/                   # core 事件 → UI 渲染适配
     └── event-renderer.ts
 ```
 
 ---
 
-## 11. 设计原则总结
+## 11. @mech-code/tools 目录结构
+
+```
+packages/tools/src/
+├── bash/
+│   ├── classifier.ts           # 命令风险分类
+│   ├── executor.ts             # Shell 命令执行
+│   ├── output.ts               # 输出截断与整理
+│   ├── semantics.ts            # 命令语义分析
+│   └── index.ts                # bash 工具定义
+├── read-file.ts                # 文件读取工具
+├── write-file.ts               # 文件写入工具
+├── edit-file.ts                # 文件编辑工具
+└── index.ts                    # 内置工具统一导出
+```
+
+---
+
+## 12. @mech-code/middleware 目录结构
+
+```
+packages/middleware/src/
+├── context-compact/            # 上下文压缩、触发器与摘要
+├── tool-result/                # 工具结果存储、投影、清理与可见性
+├── todo.ts                     # Todo 状态中间件
+└── index.ts                    # 内置中间件统一导出
+```
+
+---
+
+## 13. @mech-code/shared 目录结构
+
+```
+packages/shared/src/
+├── path.ts                     # 路径辅助函数
+├── string.ts                   # 字符串辅助函数
+└── index.ts                    # 共享协议类型与统一导出
+```
+
+---
+
+## 14. 设计原则总结
 
 | 原则                | 说明                                                        |
 | ------------------- | ----------------------------------------------------------- |

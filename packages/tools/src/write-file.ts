@@ -43,7 +43,7 @@ function isEnoent(err: unknown): boolean {
 type ReadFileState = Record<string, ReadCacheEntry>
 
 function getCwd(ctx: ToolRunContext): string {
-  return typeof ctx.props.cwd === 'string' ? ctx.props.cwd : process.cwd()
+  return typeof ctx.runtime.props.cwd === 'string' ? ctx.runtime.props.cwd : process.cwd()
 }
 
 /** 获取 readFileState 缓存（从 AgentState 顶层取出，惰性初始化） */

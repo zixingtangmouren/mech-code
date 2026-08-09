@@ -1,34 +1,45 @@
 # Message 协议设计文档
 
-> 版本：v0.1.0 · 日期：2026-05-30
+> 版本：v0.2.0 · 日期：2026-08-08
 
 ---
 
 ## 1. 设计原则
 
-- **AgentMessage 是 Agent Loop 的通信协议**：所有参与者（用户、LLM、工具）之间的交互通过 `AgentMessage` 进行。
-- **Provider 内部处理厂商差异**：Agent Loop、middleware、`LLMProvider.chat/stream` 的 messages 入参均为 `AgentMessage[]`。
-- **序列化中间形态不外泄**：Provider serializer 可在内部把 `AgentMessage` 投影为规范化中间类型，再转换为厂商请求体；Agent Loop 不操作该中间类型。
+- **AgentMessage 是唯一运行时消息协议**：Agent Loop、middleware 和 Provider 都直接使用 `AgentMessage[]`。
+- **构造输入宽松，实例状态严格**：user/assistant 构造器接受字符串简写，但实例的 `content` 始终是内容块数组。
+- **Provider 只处理厂商差异**：serializer 将规范的 `AgentMessage` 直接转换为厂商请求体，不再经过通用中间消息类型。
+- **metadata 不承载模型上下文**：metadata 只保存宿主侧信息，不会进入 Provider payload；需要发给模型的数据必须是消息的显式字段。
 
 ---
 
 ## 2. 类型设计
 
-### 2.1 AgentMessage（Agent Loop 运行时）
+### 2.1 AgentMessage
 
 ```ts
 type AgentMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage
 ```
 
-`AgentState.messages`、`ModelCallRequest.params.messages`、`ChatParams.messages` 都保持这个类型。
+`AgentState.messages`、`ModelCallRequest.params.messages` 和 `ChatParams.messages` 都使用这个类型。
 
-### 2.2 Provider 序列化中间形态
+### 2.2 构造输入与实例不变量
 
-Provider serializer 内部可使用规范化后的消息形态，例如将 `UserMessage('hello')` 投影为 `{ role: 'user', content: [{ type: 'text', text: 'hello' }] }`。该形态只服务于厂商 payload 组装，不作为 Agent Loop 或 middleware 的 API。
+`UserMessage` 和 `AssistantMessage` 接受字符串作为纯文本简写，并在构造时立即转成内容块：
+
+```ts
+const user = new UserMessage('hello')
+user.content // [{ type: 'text', text: 'hello' }]
+
+const assistant = new AssistantMessage('done')
+assistant.content // [{ type: 'text', text: 'done' }]
+```
+
+因此，Agent Loop、middleware、tokenizer 和 Provider 不需要处理 `string | blocks[]` 两种运行时形态。
 
 ### 2.3 User Content Block
 
-用户消息的内容块，支持多模态：
+用户消息支持文本和多模态内容：
 
 ```ts
 type UserContentBlock =
@@ -43,7 +54,7 @@ type ImageSource =
 
 ### 2.4 Assistant Content Block
 
-模型回复的内容块。一条 assistant 消息可以同时包含 thinking + text + 多个 tool_use：
+一条 assistant 消息可以同时包含 thinking、文本和多个工具调用：
 
 ```ts
 type AssistantContentBlock =
@@ -54,77 +65,78 @@ type AssistantContentBlock =
 
 ### 2.5 Tool Message
 
-工具执行结果，通过 `toolCallId` 与 assistant 消息中的 `tool_use.id` 关联：
+工具执行结果通过 `toolCallId` 与 assistant 消息中的 `tool_use.id` 关联：
 
 ```ts
-new ToolMessage(toolCallId, toolName, content)
+new ToolMessage(toolCallId, toolName, content, {
+  image: { type: 'base64', mediaType: 'image/png', data: '...' },
+})
+```
+
+`content` 始终是文本。图片是可选的显式模型上下文字段，由支持图片工具结果的 Provider 转换；它不存放在 metadata 中。
+
+### 2.6 序列化消息
+
+checkpoint 和事件快照使用不带 class 方法的 `Message` 类型。其 user/assistant content 同样保持内容块数组，序列化和反序列化不会改变消息形态：
+
+```ts
+type Message =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: UserContentBlock[] }
+  | { role: 'assistant'; content: AssistantContentBlock[] }
+  | {
+      role: 'tool'
+      toolCallId: string
+      toolName?: string
+      content: string
+      image?: ImageSource
+    }
 ```
 
 ---
 
 ## 3. 消息在 Agent Loop 中的流转
 
-```
+```text
 用户输入
 │
-├─ 构造 AgentMessage（如 UserMessage / ToolMessage）
+├─ 构造 UserMessage，并立即形成规范 content blocks
 │
-├─ [Agent Loop]
-│   │
-│   ├─ 组装请求: AgentMessage[] → Provider 内部 serialize → Vendor API Request
-│   │
-│   ├─ 流式响应: Vendor Chunk → Provider parseStream → StreamEvent
-│   │                                                      │
-│   │                                             (实时 emit 事件给消费者)
-│   │
-│   ├─ 响应完成: 累积 StreamEvent → AssistantMessage
-│   │
-│   ├─ 如果有 tool_use:
-│   │   ├─ 执行工具
-│   │   ├─ 生成 ToolMessage
-│   │   └─ 追加到 messages[] → 回到循环顶部
-│   │
-│   └─ 无 tool_use → 结束循环
+├─ Agent Loop / middleware 始终操作 AgentMessage[]
 │
-├─ 输出: state.messages 保持 AgentMessage[]（由调用方持有）
+├─ Provider serializer: AgentMessage[] → Vendor API Request
+│
+├─ Vendor Chunk → StreamNormalizer → AgentEvent
+│
+├─ MessageAccumulator: AgentEvent[] → AssistantContentBlock[]
+│
+├─ 构造 AssistantMessage 并追加到 state.messages
+│
+├─ 如果包含 tool_use：执行工具并追加 ToolMessage，然后进入下一轮
+│
+└─ 无 tool_use：结束循环
 ```
+
+`state.messages` 在整个过程中始终保持 `AgentMessage[]`。
 
 ---
 
-## 4. Provider 内部规范化
+## 4. Provider 转换职责
 
-### 4.1 AgentMessage → Provider payload
-
-Provider 内部序列化时才做消息投影：
+### 4.1 请求序列化
 
 ```ts
-function serialize(messages: AgentMessage[], options: SerializeOptions): VendorRequest
-
-// 转换规则：
-// 'hello' → [{ type: 'text', text: 'hello' }]
-// string content → 包装为单个 text block 数组
-// message.metadata → 不进入厂商 payload
-```
-
----
-
-## 5. Provider Adapter 的 Message 转换职责
-
-### 5.1 请求序列化
-
-Provider 内部将 AgentMessage[] 转换为厂商特定的 API 请求格式：
-
-```ts
-interface MessageSerializer {
-  serialize(messages: AgentMessage[], options: SerializeOptions): VendorRequest
-}
-
-interface SerializeOptions {
-  system?: string
-  tools?: ToolDefinition[]
-  maxTokens?: number
+interface MessageSerializer<TVendorRequest> {
+  serialize(messages: AgentMessage[], options: SerializeOptions): TVendorRequest
 }
 ```
+
+serializer 直接读取规范消息并处理厂商差异：
+
+- Anthropic 把 user/assistant 内容块映射为原生 content blocks。
+- OpenAI Chat Completions 将 assistant 的 `tool_use` 块转换为 `tool_calls`。
+- OpenAI Responses 将消息拆成 message、`function_call` 和 `function_call_output` input items。
+- metadata 不会被序列化；`ToolMessage.image` 由支持该能力的 Provider 显式转换。
 
 #### Anthropic 格式
 
@@ -132,120 +144,76 @@ interface SerializeOptions {
 // AgentMessage
 new AssistantMessage([
   { type: 'text', text: '让我来看看' },
-  { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } }
+  { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } },
 ])
 
-// → Anthropic API
-{ role: 'assistant', content: [
-  { type: 'text', text: '让我来看看' },
-  { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } }
-]}
-// (Anthropic 原生格式与我们的内部格式高度对齐)
+// Anthropic API
+{
+  role: 'assistant',
+  content: [
+    { type: 'text', text: '让我来看看' },
+    { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } },
+  ],
+}
 ```
 
 #### OpenAI 格式
 
 ```ts
-// AgentMessage
-new AssistantMessage([
-  { type: 'text', text: '让我来看看' },
-  { type: 'tool_use', id: 'call_1', name: 'read_file', input: { path: 'foo.ts' } }
-])
-
-// → OpenAI API
+// OpenAI Chat Completions API
 {
   role: 'assistant',
   content: '让我来看看',
-  tool_calls: [{
-    id: 'call_1',
-    type: 'function',
-    function: { name: 'read_file', arguments: '{"path":"foo.ts"}' }
-  }]
+  tool_calls: [
+    {
+      id: 'call_1',
+      type: 'function',
+      function: { name: 'read_file', arguments: '{"path":"foo.ts"}' },
+    },
+  ],
 }
 ```
 
-### 5.2 流式 Chunk 规范化
-
-将厂商流式响应转换为内部 StreamEvent：
+### 4.2 流式响应转换
 
 ```ts
-interface StreamNormalizer {
-  /** 逐 chunk 调用，输出标准化事件 */
-  push(chunk: VendorChunk): StreamEvent[]
-  /** 流结束时调用，输出剩余事件 */
-  flush(): StreamEvent[]
+interface StreamNormalizer<TVendorChunk> {
+  push(chunk: TVendorChunk): AgentEvent[]
+  flush(): AgentEvent[]
+  getStreamMeta(): StreamMeta
 }
 ```
 
-#### Anthropic Stream → Internal StreamEvent
-
-| Anthropic 原始事件                       | 内部 StreamEvent      |
-| ---------------------------------------- | --------------------- |
-| `content_block_start` (type=thinking)    | `reasoning_start`     |
-| `content_block_delta` (thinking_delta)   | `reasoning_content`   |
-| `content_block_stop` (thinking block)    | `reasoning_end`       |
-| `content_block_start` (type=text)        | `text_start`          |
-| `content_block_delta` (text_delta)       | `text_delta`          |
-| `content_block_stop` (text block)        | `text_end`            |
-| `content_block_start` (type=tool_use)    | `tool_start`          |
-| `content_block_delta` (input_json_delta) | `tool_input_delta`    |
-| `content_block_stop` (tool_use block)    | (无，等待执行)        |
-| `message_delta` (stop_reason)            | (由 Loop Engine 处理) |
-
-#### OpenAI Stream → Internal StreamEvent
-
-| OpenAI 原始事件                                     | 内部 StreamEvent                            |
-| --------------------------------------------------- | ------------------------------------------- |
-| `choices[0].delta.content` (非空)                   | `text_delta`（首次触发 `text_start`）       |
-| `choices[0].delta.tool_calls[i].function.arguments` | `tool_input_delta`（首次触发 `tool_start`） |
-| `choices[0].finish_reason = 'stop'`                 | `text_end`                                  |
-| `choices[0].finish_reason = 'tool_calls'`           | (由 Loop Engine 处理)                       |
-
-### 5.3 响应累积
-
-流结束后，Provider 从 `AgentEvent` 序列累积生成完整 `ChatResponse.content`，Agent Loop 再追加 `AssistantMessage`：
-
-```ts
-function accumulateAssistantContent(events: AgentEvent[]): AssistantContentBlock[]
-
-// 逻辑：
-// reasoning_start → reasoning_content×N → reasoning_end  ⇒  { type: 'thinking', text }
-// text_start → text_delta×N → text_end                   ⇒  { type: 'text', text }
-// tool_start → tool_input_delta×N                         ⇒  { type: 'tool_use', id, name, input }
-//
-// Agent Loop 最终写入:
-// new AssistantMessage(content)
-```
+每个 Provider 的 normalizer 只负责把厂商 chunk 转换为统一 `AgentEvent`。流结束后，`MessageAccumulator.flush()` 返回 `AssistantContentBlock[]`，再由 `AssistantMessage` 保存为完整回复。
 
 ---
 
-## 6. 模块划分
+## 5. 模块划分
 
-```
+```text
 packages/core/src/message/
-├── message.ts            # AgentMessage class 体系
-├── types.ts              # Provider 序列化中间类型 / ContentBlock 类型
-├── normalize.ts          # Provider 内部 AgentMessage → 中间类型转换
-├── builder.ts            # 组装 messages + system + tools 为请求参数
-├── accumulator.ts        # AgentEvent[] → assistant content 累积器
-└── tokenizer.ts          # Token 计数估算
+├── message.ts            # AgentMessage class、构造规范化与序列化
+├── builder.ts            # 构建 Provider 调用消息快照
+├── accumulator.ts        # AgentEvent[] → AssistantContentBlock[]
+└── tokenizer.ts          # token 估算
 
 packages/core/src/provider/
-├── types.ts              # LLMProvider / StreamEvent / StreamNormalizer 接口
-├── anthropic.ts          # Anthropic 实现（含 serialize + parseStream）
-├── openai.ts             # OpenAI 实现
-└── openai-compatible.ts  # 通用兼容实现
+├── types.ts              # Provider 与 serializer/normalizer 协议
+├── anthropic/            # Anthropic 请求和流式协议转换
+├── openai/               # OpenAI Chat/Responses 请求和流式协议转换
+└── openai-compatible/    # OpenAI 兼容 Provider
 ```
 
 ---
 
-## 7. 设计决策记录
+## 6. 设计决策记录
 
-| 决策                                | 原因                                                                                                    |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 内部 Message 的 content 统一为数组  | assistant 消息天然包含多个 block（thinking + text + tool_use），统一为数组避免条件判断                  |
-| 对外 Message 允许 `string` 简写     | 降低 SDK 使用门槛，简单场景无需构造数组                                                                 |
-| 内部格式对齐 Anthropic 而非 OpenAI  | Anthropic 的 `content[]` 多 block 模型更具表达力，OpenAI 的 `content + tool_calls` 分离设计需要额外适配 |
-| StreamNormalizer 使用有状态推送模式 | 流式 chunk 可能跨事件边界，需要状态机维护当前 block 上下文                                              |
-| tool message 的 content 为 string   | 工具结果序列化为 string 传给模型，避免嵌套结构复杂化                                                    |
-| normalize 在进入 Loop 前执行一次    | 避免 Loop 内部反复处理两种形式的分支逻辑                                                                |
+| 决策                                     | 原因                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| user/assistant 实例的 content 始终为数组 | 建立单一运行时不变量，避免 Loop、middleware、tokenizer 和 Provider 重复分支    |
+| 构造器接受 string 简写                   | 保留简单文本调用的人体工学，同时不把联合类型扩散到实例内部                     |
+| 不设置通用 Provider 中间消息类型         | 规范 AgentMessage 已足以承载所有公共语义，再投影一次只会增加转换和类型维护成本 |
+| Provider 直接转换 AgentMessage           | 厂商差异只存在于 serializer 边界，职责清晰                                     |
+| ToolMessage 图片使用显式字段             | 会发给模型的数据不应藏在只供宿主消费的 metadata 中                             |
+| StreamNormalizer 使用有状态推送模式      | 流式 chunk 可能跨事件边界，需要状态机维护当前 block 上下文                     |
+| MessageAccumulator 返回内容块数组        | 累积器只负责内容累积，消息对象由调用边界构造                                   |

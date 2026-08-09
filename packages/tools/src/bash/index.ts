@@ -33,7 +33,7 @@ function resolveShellCwd(inputCwd: string | undefined, context: ToolRunContext):
   if (inputCwd) return inputCwd
   const cached = context.state['shellCwd']
   if (typeof cached === 'string' && cached) return cached
-  return typeof context.props.cwd === 'string' ? context.props.cwd : process.cwd()
+  return typeof context.runtime.props.cwd === 'string' ? context.runtime.props.cwd : process.cwd()
 }
 
 // === 工具定义 ===

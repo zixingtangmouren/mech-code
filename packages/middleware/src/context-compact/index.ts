@@ -8,7 +8,14 @@ import { CONTEXT_COMPACT_STATE_KEY, type ContextCompactMiddlewareOptions } from 
 
 export {
   CONTEXT_COMPACT_STATE_KEY,
+  CONTEXT_COMPACT_EVENT_SOURCE,
+  isContextCompactEvent,
+  type ContextCompactCompletedEvent,
+  type ContextCompactEvent,
+  type ContextCompactFailedEvent,
+  type ContextCompactMode,
   type ContextCompactMiddlewareOptions,
+  type ContextCompactStartedEvent,
   type ContextCompactState,
   type ContextSummaryRecord,
   type ContextTrigger,

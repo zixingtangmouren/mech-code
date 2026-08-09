@@ -14,6 +14,7 @@ describe('resolveProviderConfig', () => {
         model: 'gpt-5',
         apiKeyEnv: 'OPENAI_API_KEY',
         protocol: 'responses',
+        timeoutMs: 120_000,
         defaultParams: {
           maxTokens: 4096,
           extra: {
@@ -25,6 +26,7 @@ describe('resolveProviderConfig', () => {
       model: 'gpt-5',
       apiKey: 'test-key',
       protocol: 'responses',
+      timeoutMs: 120_000,
       defaultParams: {
         maxTokens: 4096,
         extra: {

@@ -25,8 +25,9 @@ export function createStreamResult<TVendorChunk>(options: {
   vendorChunks: AsyncIterable<TVendorChunk>
   normalizer: StreamNormalizer<TVendorChunk>
   controller: AbortController
+  cleanup?: () => void
 }): StreamResult {
-  const { vendorChunks, normalizer, controller } = options
+  const { vendorChunks, normalizer, controller, cleanup } = options
   const accumulator = new MessageAccumulator()
 
   let resolveFinale!: (response: ChatResponse) => void
@@ -36,6 +37,8 @@ export function createStreamResult<TVendorChunk>(options: {
     resolveFinale = resolve
     rejectFinale = reject
   })
+  // stream 本身也会抛出同一异常；调用方只消费 stream 时避免产生未处理拒绝。
+  void final.catch(() => undefined)
 
   async function* generateStream(): AsyncIterable<AgentEvent> {
     try {
@@ -55,15 +58,17 @@ export function createStreamResult<TVendorChunk>(options: {
 
       // 从 normalizer 获取 usage 和 stopReason，组装 ChatResponse
       const meta = normalizer.getStreamMeta()
-      const msg = accumulator.flush()
+      const content = accumulator.flush()
       resolveFinale({
-        message: new AssistantMessage(msg.role === 'assistant' ? msg.content : []),
+        message: new AssistantMessage(content),
         usage: meta.usage,
         stopReason: meta.stopReason,
       })
-    } catch (err) {
-      rejectFinale(err)
-      throw err
+    } catch (error) {
+      rejectFinale(error)
+      throw error
+    } finally {
+      cleanup?.()
     }
   }
 
@@ -72,6 +77,7 @@ export function createStreamResult<TVendorChunk>(options: {
     final,
     abort() {
       controller.abort()
+      cleanup?.()
     },
   }
 }
@@ -95,6 +101,7 @@ export function retryStreamResult(
     resolveFinal = resolve
     rejectFinal = reject
   })
+  void final.catch(() => undefined)
 
   async function* generateStream(): AsyncIterable<AgentEvent> {
     let attempt = 0

@@ -141,6 +141,15 @@ metadata: {
 - Provider 请求只看到未 compressed 的消息。
 - reactive compact 只处理 `ProviderError.code === 'context_too_long'`，默认最多重试 1 次。
 
+事件：
+
+- 开始压缩时发送 `custom(context-compact/started)`，payload 包含 `mode: 'proactive' | 'reactive' | 'manual'`。
+- 成功时发送 `custom(context-compact/completed)`，payload 包含 mode、summary id、压缩消息数和压缩前后 token 估算。
+- 摘要生成失败时发送 `custom(context-compact/failed)`，payload 包含 mode 和错误文本，并保留原有的“不压缩、继续调用主模型”行为。
+- `started` 总是以 `completed` 或 `failed` 收尾；没有触发压缩时不发送事件。
+
+这些事件在摘要请求进行期间由 Agent Loop 实时转发，CLI 因此可以准确显示和结束“正在压缩上下文”状态。完整 summary 记录仍只存放在 `AgentState.contextCompact`。
+
 ## 4. CLI 配置
 
 CLI 使用两个顶层配置块：

@@ -21,11 +21,11 @@ pnpm add @mech-code/shared
 ```ts
 import type { Message, UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 
-// User message — supports text and multimodal content
-const msg: Message = { role: 'user', content: 'Hello!' }
+// Serializable user message — content always uses canonical blocks
+const userMessage: Message = { role: 'user', content: [{ type: 'text', text: 'Hello!' }] }
 
 // Assistant message — supports text, tool calls, and thinking blocks
-const msg: Message = {
+const assistantMessage: Message = {
   role: 'assistant',
   content: [
     { type: 'text', text: 'I will read the file.' },
@@ -56,8 +56,8 @@ import type { AgentEvent } from '@mech-code/shared'
 // MCP calls
 ;'mcp_start' | 'mcp_executing' | 'mcp_result' | 'mcp_end'
 
-// State snapshots
-;('state_changed')
+// Middleware-defined custom events
+;('custom')
 
 // Turn management
 'turn_start' | 'turn_end'
@@ -95,7 +95,11 @@ interface ToolDefinition {
 ### HITL checkpoint types
 
 ```ts
-import type { SessionCheckpoint, SerializableAgentState } from '@mech-code/shared'
+import type {
+  SessionCheckpoint,
+  SerializableAgentState,
+  SerializableRuntimeState,
+} from '@mech-code/shared'
 ```
 
 ### Utility functions

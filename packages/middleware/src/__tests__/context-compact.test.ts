@@ -9,13 +9,18 @@ import {
   defineTool,
 } from '@mech-code/core'
 import type {
+  AgentEvent,
   CallOptions,
   ChatParams,
   ChatResponse,
   LLMProvider,
   StreamResult,
 } from '@mech-code/core'
-import { CONTEXT_COMPACT_STATE_KEY, contextCompactMiddleware } from '../context-compact/index.js'
+import {
+  CONTEXT_COMPACT_STATE_KEY,
+  contextCompactMiddleware,
+  isContextCompactEvent,
+} from '../context-compact/index.js'
 import type { ContextCompactState, SummarySource } from '../context-compact/index.js'
 import { toolResultMiddleware } from '../tool-result/index.js'
 
@@ -43,8 +48,9 @@ describe('contextCompactMiddleware', () => {
       middleware: [contextCompactMiddleware({ summaryProvider, trigger: { messages: 3 } })],
     })
 
-    for await (const _event of agent.run({ state })) {
-      // consume stream
+    const events: AgentEvent[] = []
+    for await (const event of agent.run({ state })) {
+      events.push(event)
     }
 
     const compactState = state[CONTEXT_COMPACT_STATE_KEY] as ContextCompactState
@@ -54,6 +60,24 @@ describe('contextCompactMiddleware', () => {
     expect(providerPayload).toContain('important summary')
     expect(providerPayload).not.toContain('latest request')
     expect(providerPayload).not.toContain('old request')
+    const compactEvents = events.filter(isContextCompactEvent)
+    expect(compactEvents).toEqual([
+      expect.objectContaining({
+        type: 'custom',
+        source: 'context-compact',
+        name: 'started',
+        payload: { mode: 'proactive' },
+      }),
+      expect.objectContaining({
+        type: 'custom',
+        source: 'context-compact',
+        name: 'completed',
+      }),
+    ])
+    expect(compactEvents[1]?.payload).toMatchObject({
+      mode: 'proactive',
+      compressedMessageCount: 3,
+    })
   })
 
   it('requests compact summaries with original messages and no tools', async () => {
@@ -241,14 +265,120 @@ describe('contextCompactMiddleware', () => {
       ],
     })
 
-    for await (const _event of agent.run({ state })) {
-      // consume stream
+    const events: AgentEvent[] = []
+    for await (const event of agent.run({ state })) {
+      events.push(event)
     }
 
     expect(provider.streamMock).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(provider.streamCalls[1]?.messages)).toContain('reactive summary')
     expect(JSON.stringify(provider.streamCalls[1]?.messages)).not.toContain('old request')
     expect(JSON.stringify(provider.streamCalls[1]?.messages)).not.toContain('latest request')
+    expect(
+      events.filter(isContextCompactEvent).map((event) => [event.name, event.payload.mode]),
+    ).toEqual([
+      ['started', 'reactive'],
+      ['completed', 'reactive'],
+    ])
+  })
+
+  it('emits reactive started before summary generation completes', async () => {
+    const provider = createProvider([
+      new ProviderError('context_too_long', 'mock', 'too long'),
+      assistantResponse([{ type: 'text', text: 'recovered' }]),
+    ])
+    let resolveSummary: ((response: ChatResponse) => void) | undefined
+    let markSummaryStarted: (() => void) | undefined
+    const summaryStarted = new Promise<void>((resolve) => {
+      markSummaryStarted = resolve
+    })
+    const summaryProvider: LLMProvider = {
+      name: 'summary',
+      chat: vi.fn(
+        () =>
+          new Promise<ChatResponse>((resolve) => {
+            resolveSummary = resolve
+            markSummaryStarted?.()
+          }),
+      ),
+      stream: vi.fn(),
+    }
+    const state = createAgentState()
+    state.messages.push(new UserMessage('old request'), new UserMessage('latest request'))
+    const agent = createAgent({
+      provider,
+      middleware: [
+        contextCompactMiddleware({ summaryProvider, reactiveCompact: { maxRetries: 1 } }),
+      ],
+    })
+    const iterator = agent.run({ state })[Symbol.asyncIterator]()
+
+    expect((await iterator.next()).value).toMatchObject({ type: 'agent_run_start' })
+    expect((await iterator.next()).value).toMatchObject({ type: 'turn_start' })
+    const compactStartedEvent = iterator.next()
+    await summaryStarted
+    expect((await compactStartedEvent).value).toMatchObject({
+      type: 'custom',
+      source: 'context-compact',
+      name: 'started',
+      payload: { mode: 'reactive' },
+    })
+
+    resolveSummary?.(assistantResponse([{ type: 'text', text: 'reactive summary' }]))
+    const remainingEvents: AgentEvent[] = []
+    while (true) {
+      const result = await iterator.next()
+      if (result.done) break
+      remainingEvents.push(result.value)
+    }
+    expect(remainingEvents.filter(isContextCompactEvent).map((event) => event.name)).toContain(
+      'completed',
+    )
+  })
+
+  it('emits a failed event when summary generation fails', async () => {
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
+    const summaryProvider = createSummaryProvider('unused')
+    summaryProvider.chatMock.mockRejectedValueOnce(new Error('summary unavailable'))
+    const state = createAgentState()
+    state.messages.push(new UserMessage('old request'), new UserMessage('latest request'))
+    const agent = createAgent({
+      provider,
+      middleware: [contextCompactMiddleware({ summaryProvider, trigger: { messages: 2 } })],
+    })
+    const events: AgentEvent[] = []
+
+    for await (const event of agent.run({ state })) {
+      events.push(event)
+    }
+
+    expect(events.filter(isContextCompactEvent)).toEqual([
+      expect.objectContaining({
+        name: 'started',
+        payload: { mode: 'proactive' },
+      }),
+      expect.objectContaining({
+        name: 'failed',
+        payload: { mode: 'proactive', error: 'summary unavailable' },
+      }),
+    ])
+  })
+
+  it('does not emit compact events when compaction is not triggered', async () => {
+    const provider = createProvider([assistantResponse([{ type: 'text', text: 'ok' }])])
+    const state = createAgentState()
+    state.messages.push(new UserMessage('short request'))
+    const agent = createAgent({
+      provider,
+      middleware: [contextCompactMiddleware({ trigger: { messages: 2 } })],
+    })
+    const events: AgentEvent[] = []
+
+    for await (const event of agent.run({ state })) {
+      events.push(event)
+    }
+
+    expect(events.filter(isContextCompactEvent)).toEqual([])
   })
 
   it('compacts projected tool result previews when combined with toolResultMiddleware', async () => {

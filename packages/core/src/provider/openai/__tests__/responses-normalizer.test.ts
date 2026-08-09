@@ -89,4 +89,23 @@ describe('OpenAIResponsesStreamNormalizer', () => {
       { type: 'reasoning_end', fullText: 'Check inputs. Then answer.' },
     ])
   })
+
+  it('preserves metadata when a response ends incomplete', () => {
+    const normalizer = new OpenAIResponsesStreamNormalizer()
+
+    normalizer.push({ type: 'response.output_text.delta', delta: 'Partial' })
+    normalizer.push({
+      type: 'response.incomplete',
+      response: {
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+      },
+    })
+
+    expect(normalizer.getStreamMeta()).toEqual({
+      usage: { inputTokens: 8, outputTokens: 4 },
+      stopReason: 'max_tokens',
+    })
+  })
 })

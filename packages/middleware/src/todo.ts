@@ -1,8 +1,16 @@
 import { z } from 'zod'
 import { UserMessage, createMiddleware, defineTool } from '@mech-code/core'
-import type { AgentMiddleware, AgentState, RunContext } from '@mech-code/core'
+import type {
+  AgentEvent,
+  AgentMiddleware,
+  AgentState,
+  CustomAgentEvent,
+  RunContext,
+} from '@mech-code/core'
 
 export const TODO_STORE_KEY = 'todos'
+export const TODO_EVENT_SOURCE = 'todo'
+export const TODO_UPDATED_EVENT_NAME = 'updated'
 const TODO_TOOL_NAME = 'write_todos'
 const TURNS_BETWEEN_REMINDERS = 10
 const TURNS_SINCE_WRITE = 10
@@ -12,6 +20,13 @@ export type TodoStatus = 'pending' | 'in_progress' | 'completed'
 export interface TodoItem {
   content: string
   status: TodoStatus
+}
+
+export type TodoUpdatedEvent = CustomAgentEvent<{
+  items: Array<{ content: string; status: TodoStatus }>
+}> & {
+  source: typeof TODO_EVENT_SOURCE
+  name: typeof TODO_UPDATED_EVENT_NAME
 }
 
 export interface TodoState {
@@ -348,7 +363,7 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
       const count = countToolCalls(ctx, TODO_TOOL_NAME)
       if (count > 0) {
         state.writeCallCountByTurn ??= {}
-        state.writeCallCountByTurn[ctx.loopState.turnIndex] = count
+        state.writeCallCountByTurn[ctx.runtime.turnIndex] = count
       }
     },
     async wrapToolCall(request, handler) {
@@ -359,7 +374,7 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
       const { context } = request
       const state = ensureTodoState(context.state)
       const count =
-        state.writeCallCountByTurn?.[context.loopState.turnIndex] ??
+        state.writeCallCountByTurn?.[context.runtime.turnIndex] ??
         countLatestAssistantToolCalls(context.state.messages, TODO_TOOL_NAME)
       if (count > 1) {
         return {
@@ -371,12 +386,43 @@ export function todoMiddleware(options: TodoMiddlewareOptions = {}): AgentMiddle
       }
 
       const output = await handler(request)
-      if (!output.isError && output.metadata?.cleared !== true) {
-        state.lastWriteTurn = getCurrentTodoTurn(state, context.loopState.turnIndex)
+      if (!output.isError) {
+        if (output.metadata?.cleared !== true) {
+          state.lastWriteTurn = getCurrentTodoTurn(state, context.runtime.turnIndex)
+        }
+        context.runtime.emitCustomAgentEvent({
+          source: TODO_EVENT_SOURCE,
+          name: TODO_UPDATED_EVENT_NAME,
+          payload: { items: state.items.map((item) => ({ ...item })) },
+        })
       }
       return output
     },
   })
+}
+
+export function isTodoUpdatedEvent(event: AgentEvent): event is TodoUpdatedEvent {
+  if (
+    event.type !== 'custom' ||
+    event.source !== TODO_EVENT_SOURCE ||
+    event.name !== TODO_UPDATED_EVENT_NAME ||
+    !event.payload ||
+    typeof event.payload !== 'object' ||
+    Array.isArray(event.payload)
+  ) {
+    return false
+  }
+  const items = event.payload.items
+  return Array.isArray(items) && items.every(isTodoItem)
+}
+
+function isTodoItem(value: unknown): value is TodoItem {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  return (
+    typeof item.content === 'string' &&
+    (item.status === 'pending' || item.status === 'in_progress' || item.status === 'completed')
+  )
 }
 
 function ensureTodoState(state: AgentState): TodoState {
@@ -402,8 +448,8 @@ function isTodoState(value: unknown): value is TodoState {
 }
 
 function countToolCalls(ctx: RunContext, toolName: string): number {
-  const content = ctx.loopState.lastResponse?.message.content
-  if (!Array.isArray(content)) return 0
+  const content = ctx.runtime.lastResponse?.message.content
+  if (!content) return 0
   return content.filter((block) => block.type === 'tool_use' && block.name === toolName).length
 }
 
@@ -418,7 +464,7 @@ function countLatestAssistantToolCalls(
 ): number {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
-    if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue
+    if (message?.role !== 'assistant') continue
     const calls = message.content.filter(
       (block) => block.type === 'tool_use' && block.name === toolName,
     )

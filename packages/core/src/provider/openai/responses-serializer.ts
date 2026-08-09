@@ -1,7 +1,5 @@
 import type { UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 import type { AgentMessage } from '../../message/message.js'
-import type { InternalMessage } from '../../message/types.js'
-import { normalizeMessages } from '../../message/normalize.js'
 import type { MessageSerializer, SerializeOptions } from '../types.js'
 
 // === OpenAI Responses API 请求体类型 ===
@@ -55,12 +53,11 @@ export class OpenAIResponsesSerializer implements MessageSerializer<OpenAIRespon
 
   serialize(messages: AgentMessage[], options: SerializeOptions): OpenAIResponsesRequest {
     const { tools, modelParams } = options
-    const internalMessages = normalizeMessages(messages)
-    const instructions = this.collectInstructions(options.system, internalMessages)
+    const instructions = this.collectInstructions(options.system, messages)
 
     const result: OpenAIResponsesRequest = {
       model: this.model,
-      input: this.convertInput(internalMessages),
+      input: this.convertInput(messages),
     }
 
     if (instructions) result.instructions = instructions
@@ -86,7 +83,7 @@ export class OpenAIResponsesSerializer implements MessageSerializer<OpenAIRespon
     return result
   }
 
-  private collectInstructions(system: string | undefined, messages: InternalMessage[]): string {
+  private collectInstructions(system: string | undefined, messages: AgentMessage[]): string {
     const parts: string[] = []
     if (system) parts.push(system)
     for (const msg of messages) {
@@ -95,7 +92,7 @@ export class OpenAIResponsesSerializer implements MessageSerializer<OpenAIRespon
     return parts.join('\n\n')
   }
 
-  private convertInput(messages: InternalMessage[]): OpenAIResponseInputItem[] {
+  private convertInput(messages: AgentMessage[]): OpenAIResponseInputItem[] {
     const input: OpenAIResponseInputItem[] = []
 
     for (const msg of messages) {

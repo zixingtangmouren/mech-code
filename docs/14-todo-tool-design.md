@@ -11,7 +11,7 @@ Todo 功能用于让 Agent 在复杂编码任务中维护一份结构化执行�
 - 状态位置：`AgentState.todos`
 - CLI 默认挂载：`packages/cli/src/commands/chat.ts`
 
-Todo 中间件负责注册工具、注入使用说明、保存 Todo 状态、控制提醒节奏。上层 UI 通过 Agent 事件流中的 `state_changed` 感知状态变化，不需要 Todo 中间件额外暴露 UI 专用 API。
+Todo 中间件负责注册工具、注入使用说明、保存 Todo 状态、控制提醒节奏，并在成功写入后发送 `todo/updated` 自定义 Agent 事件供上层 UI 刷新。
 
 ---
 
@@ -48,17 +48,17 @@ Agent Loop
   │    └─ 从 ctx.state.messages 构建请求，发送前移除 _meta
   │
   ├─ afterModel(ctx)
-  │    └─ 从 ctx.loopState.lastResponse 统计 write_todos 调用次数
+  │    └─ 从 ctx.runtime.lastResponse 统计 write_todos 调用次数
   │
   └─ wrapToolCall(request, handler)
        ├─ 拦截重复 write_todos
        └─ 执行工具并更新 state.todos
 
 External state access
-  └─ 监听 state_changed，changedKeys 包含 "todos" 时刷新 UI
+  └─ 监听 custom(todo/updated)，从 payload.items 刷新 UI
 ```
 
-Todo 中间件依赖 Agent Loop 的分层 Context：`ctx.state` 保存持久会话状态，`ctx.runtime` 保存本次运行能力和可变模型调用配置，`ctx.loopState` 保存当前循环控制状态。
+Todo 中间件依赖 Agent Loop 的两层 Context：`ctx.state` 保存持久会话状态，`ctx.runtime` 提供只读运行信息、调用方 props 和当前执行能力。
 
 ---
 
@@ -163,13 +163,13 @@ export interface TodoState {
 }
 ```
 
-| 字段                   | 说明                                                  |
-| ---------------------- | ----------------------------------------------------- |
-| `items`                | 最近一次提交的完整 Todo 列表                          |
-| `lastWriteTurn`        | 最近一次成功写入发生的 Todo 逻辑轮次                  |
-| `lastReminderTurn`     | 最近一次注入 reminder 的 Todo 逻辑轮次                |
-| `turnCounter`          | Todo 中间件自己的模型轮次计数器，跨多次 `run()` 保留  |
-| `writeCallCountByTurn` | 每个 Agent `loopState.turnIndex` 中模型生成的写入次数 |
+| 字段                   | 说明                                                 |
+| ---------------------- | ---------------------------------------------------- |
+| `items`                | 最近一次提交的完整 Todo 列表                         |
+| `lastWriteTurn`        | 最近一次成功写入发生的 Todo 逻辑轮次                 |
+| `lastReminderTurn`     | 最近一次注入 reminder 的 Todo 逻辑轮次               |
+| `turnCounter`          | Todo 中间件自己的模型轮次计数器，跨多次 `run()` 保留 |
+| `writeCallCountByTurn` | 每个 Agent `runtime.turnIndex` 中模型生成的写入次数  |
 
 工具执行时会复制模型提交的列表，然后覆盖 `state.todos.items`。是否展示、如何过滤已完成项、是否隐藏工具调用，都属于上层 UI 或事件消费方的职责。
 
@@ -232,10 +232,10 @@ Reminder 不追加到 `ctx.runtime.system`。中间件会在 `ctx.state.messages
 
 ### 4. `afterModel`
 
-模型响应后、工具执行前，中间件从 `ctx.loopState.lastResponse.content` 统计本轮 assistant 响应中 `write_todos` 的调用次数，并写入：
+模型响应后、工具执行前，中间件从 `ctx.runtime.lastResponse.message.content` 统计本轮 assistant 响应中 `write_todos` 的调用次数，并写入：
 
 ```ts
-state.writeCallCountByTurn[ctx.loopState.turnIndex] = count
+state.writeCallCountByTurn[ctx.runtime.turnIndex] = count
 ```
 
 这个计数用于后续 `wrapToolCall` 判断同一 assistant turn 是否重复调用 Todo 工具。
@@ -253,7 +253,7 @@ Error: write_todos was called multiple times in the same assistant turn. Submit 
 如果只有一次调用，则执行 `handler(request)`。工具成功且未清空 Todo 状态后更新：
 
 ```ts
-state.lastWriteTurn = getCurrentTodoTurn(state, request.context.loopState.turnIndex)
+state.lastWriteTurn = getCurrentTodoTurn(state, request.context.runtime.turnIndex)
 ```
 
 `getCurrentTodoTurn` 使用 `turnCounter - 1` 取回当前模型调用的 Todo 逻辑轮次，因为 `beforeModel` 已经在调用模型前把 `turnCounter` 自增。
@@ -307,13 +307,15 @@ Todo 状态是 `AgentState` 顶层字段的一部分，因此会被：
 
 Todo 中间件本身不触发 HITL，也不需要审批。若 Agent 因其他工具暂停，checkpoint 中会包含当前 `state.todos` 和已注入的内部消息。
 
-外部 UI 不需要监听 `tool_result(write_todos)` 来手动刷新 TodoPanel，而是监听 `state_changed`：
+外部 UI 不需要监听 `tool_result(write_todos)` 来手动刷新 TodoPanel，而是使用 Todo 中间件导出的类型守卫：
 
 ```ts
-if (event.type === 'state_changed' && event.changedKeys.includes('todos')) {
-  refreshTodoPanel(event.state.todos)
+if (isTodoUpdatedEvent(event)) {
+  refreshTodoPanel(event.payload.items)
 }
 ```
+
+事件固定为 `source: 'todo'`、`name: 'updated'`，payload 只包含可直接渲染的 Todo 列表。清空时发送 `items: []`；输入校验失败、工具失败或同一轮重复调用被拒绝时不发送更新事件。完整 `TodoState` 仍通过 checkpoint 或 `agent_run_end.state` 持久化，不由自定义事件替代。
 
 ---
 
@@ -353,15 +355,15 @@ if (event.type === 'state_changed' && event.changedKeys.includes('todos')) {
 
 1. `toolResultMode: 'full'` 的输出格式
 2. checkpoint/resume 后 `state.todos` 与注入消息保留
-3. CLI 层对 `state_changed(todos)` 的渲染测试
+3. CLI 层对 `todo/updated` 的渲染测试
 
 ---
 
 ## 已知限制与演进方向
 
-### 1. ToolOutput metadata 未进入事件流
+### 1. ToolOutput metadata 不作为 UI 事件协议
 
-`write_todos` 返回了 metadata，但 `tool_result` 事件目前没有携带 metadata。当前 UI 已经通过 `state_changed` 感知 Todo 状态，因此 metadata 不是 TodoPanel 刷新的必要路径。
+`write_todos` 返回了 metadata，但 `tool_result` 事件目前没有携带 metadata。TodoPanel 通过 `todo/updated` 的稳定 payload 刷新，因此无需把工具内部 metadata 提升为通用事件字段。
 
 ### 2. 多 `in_progress` 只做软约束
 
@@ -375,6 +377,6 @@ Todo 项目没有稳定 ID。重排或改写文案时，外部状态消费者难
 
 ### 4. Reminder 轮次语义是中间件内部逻辑轮次
 
-`turnCounter` 是 Todo 中间件自己的计数器，会跨多次 `agent.run()` 保留；它不完全等同于 Agent Loop 每次 run 内部从 0 开始的 `loopState.turnIndex`。当前实现只保留 `turnCounter`，在 `beforeModel` 中捕获当前逻辑轮次并传给 reminder，工具写入时用 `turnCounter - 1` 回推当前轮次。
+`turnCounter` 是 Todo 中间件自己的计数器，会跨多次 `agent.run()` 保留；它不完全等同于 Agent Loop 的 `runtime.turnIndex`。当前实现只保留 `turnCounter`，在 `beforeModel` 中捕获当前逻辑轮次并传给 reminder，工具写入时用 `turnCounter - 1` 回推当前轮次。
 
 如果后续 AgentState 引入全局 turn 序号，可以用统一的全局 turn 替代这套局部计数。

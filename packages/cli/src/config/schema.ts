@@ -47,6 +47,7 @@ export interface ProviderConfigEntry {
   apiKeyEnv?: string
   protocol?: ProviderConfig['protocol']
   headers?: Record<string, string>
+  timeoutMs?: number
   defaultParams?: ProviderConfig['defaultParams']
 }
 
@@ -56,12 +57,13 @@ export interface ProviderConfigEntry {
 export function resolveProviderConfig(entry: ProviderConfigEntry): ProviderConfig {
   const apiKey = entry.apiKey ?? (entry.apiKeyEnv ? (process.env[entry.apiKeyEnv] ?? '') : '')
   return {
-    baseUrl: entry.baseUrl,
     model: entry.model,
     apiKey,
-    protocol: entry.protocol,
-    headers: entry.headers,
-    defaultParams: entry.defaultParams,
+    ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
+    ...(entry.protocol === undefined ? {} : { protocol: entry.protocol }),
+    ...(entry.headers === undefined ? {} : { headers: entry.headers }),
+    ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }),
+    ...(entry.defaultParams === undefined ? {} : { defaultParams: entry.defaultParams }),
   }
 }
 

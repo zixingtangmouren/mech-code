@@ -1,8 +1,15 @@
-import type { AgentEvent, AssistantContentBlock, SessionCheckpoint } from '@mech-code/shared'
+import type {
+  AgentEvent,
+  AssistantContentBlock,
+  CustomAgentEvent,
+  ImageSource,
+  PendingToolCall,
+  SerializableRuntimeState,
+  SessionCheckpoint,
+} from '@mech-code/shared'
 import type { AgentState } from './state.js'
 import type { RunParams, RunResult } from './types.js'
 import type {
-  AgentLoopState,
   AgentMiddleware,
   AgentRuntime,
   RunContext,
@@ -19,7 +26,7 @@ import { MiddlewarePipeline } from '../middleware/pipeline.js'
 import { buildChatParams } from '../message/builder.js'
 import { SuspendSignal, isSuspendSignal } from './hitl.js'
 import { deserializeAgentState, serializeAgentState } from './state.js'
-import { ToolMessage } from '../message/message.js'
+import { AssistantMessage, ToolMessage } from '../message/message.js'
 import type { ResumeParams, ToolCallDecision } from './hitl.js'
 
 /** Agent Loop 的运行配置（从 AgentConfig 解构而来） */
@@ -47,11 +54,6 @@ interface InitLoopInfraResult {
   provider: LLMProvider
 }
 
-interface StateTracker {
-  notify(reason: string, keys?: string[]): void
-  flush(reason: string): AgentEvent | undefined
-}
-
 interface MainLoopContext {
   maxTurns: number
   pipeline: MiddlewarePipeline
@@ -59,18 +61,34 @@ interface MainLoopContext {
   wrappedModelCall: ModelCallHandler
   toolMap: Map<string, Tool>
   ctx: RunContext
-  tracker: StateTracker
+  runtimeHandle: RuntimeHandle
 }
 
-const runtimeEventQueues = new WeakMap<AgentRuntime, AgentEvent[]>()
+interface RuntimeHandle {
+  readonly runtime: AgentRuntime
+  readonly turnIndex: number
+  readonly stopReason: RunResult['stopReason']
+  setTurnIndex(turnIndex: number): void
+  setStopReason(stopReason: RunResult['stopReason']): void
+  setLastResponse(response: ChatResponse | undefined): void
+  setPendingToolCalls(calls: PendingToolCall[]): void
+  createCheckpointState(): SerializableRuntimeState
+  drainEvents(): CustomAgentEvent[]
+  hasEvents(): boolean
+  subscribeEvents(listener: () => void): () => void
+}
 
 async function* forwardStreamEvents(
   streamResult: StreamResult,
+  runtimeHandle: RuntimeHandle,
 ): AsyncGenerator<AgentEvent, ChatResponse, unknown> {
-  for await (const event of streamResult.stream) {
-    yield event
+  const iterator = streamResult.stream[Symbol.asyncIterator]()
+  while (true) {
+    const result = yield* awaitRuntimeOperation(iterator.next(), runtimeHandle)
+    if (result.done) break
+    yield result.value
   }
-  return await streamResult.final
+  return yield* awaitRuntimeOperation(streamResult.final, runtimeHandle)
 }
 
 function extractToolCalls(content: AssistantContentBlock[]): ToolCall[] {
@@ -78,7 +96,7 @@ function extractToolCalls(content: AssistantContentBlock[]): ToolCall[] {
 }
 
 function getAssistantBlocks(response: ChatResponse): AssistantContentBlock[] {
-  return Array.isArray(response.message.content) ? response.message.content : []
+  return response.message.content
 }
 
 function accumulateUsage(
@@ -104,85 +122,37 @@ function getAbortReason(signal: AbortSignal): string {
   return typeof signal.reason === 'string' ? signal.reason : 'user_abort'
 }
 
-function getTopLevelKeys(state: AgentState): string[] {
-  return Object.keys(state).sort()
-}
-
-function stableSerialize(value: unknown): string {
-  return (
-    JSON.stringify(value, (_key: string, current: unknown): unknown => {
-      if (!current || typeof current !== 'object' || Array.isArray(current)) return current
-      const record = current as Record<string, unknown>
-      return Object.keys(record)
-        .sort()
-        .reduce<Record<string, unknown>>((acc, key) => {
-          acc[key] = record[key]
-          return acc
-        }, {})
-    }) ?? '__undefined__'
-  )
-}
-
-function snapshotState(state: AgentState): Map<string, string> {
-  const snapshot = new Map<string, string>()
-  for (const key of getTopLevelKeys(state)) {
-    snapshot.set(key, stableSerialize(state[key]))
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value
+  seen.add(value)
+  for (const key of Reflect.ownKeys(value)) {
+    deepFreeze((value as Record<PropertyKey, unknown>)[key], seen)
   }
-  return snapshot
+  return Object.freeze(value)
 }
 
-function diffState(prev: Map<string, string>, state: AgentState): string[] {
-  const keys = new Set([...prev.keys(), ...getTopLevelKeys(state)])
-  const changed: string[] = []
-  for (const key of keys) {
-    const next = stableSerialize(state[key])
-    if (prev.get(key) !== next) changed.push(key)
-  }
-  return changed.sort()
+function createPendingToolCallsView(
+  calls: PendingToolCall[],
+): readonly Readonly<PendingToolCall>[] {
+  return deepFreeze(structuredClone(calls))
 }
 
-function createStateTracker(
-  state: AgentState,
-  runId: string,
-  loopState: AgentLoopState,
-): StateTracker {
-  let snapshot = snapshotState(state)
-  let pendingKeys = new Set<string>()
-  let pendingReason: string | undefined
-
-  return {
-    notify(reason, keys) {
-      pendingReason = reason
-      for (const key of keys ?? []) pendingKeys.add(key)
-    },
-    flush(reason) {
-      const changedKeys = new Set(diffState(snapshot, state))
-      for (const key of pendingKeys) changedKeys.add(key)
-      pendingKeys = new Set<string>()
-      if (changedKeys.size === 0) {
-        pendingReason = undefined
-        return undefined
-      }
-      loopState.stateRevision += 1
-      snapshot = snapshotState(state)
-      const event: AgentEvent = {
-        type: 'state_changed',
-        runId,
-        revision: loopState.stateRevision,
-        changedKeys: Array.from(changedKeys).sort(),
-        reason: pendingReason ?? reason,
-        state: serializeAgentState(state),
-      }
-      pendingReason = undefined
-      return event
-    },
-  }
+function normalizePendingToolCalls(calls: PendingToolCall[]): PendingToolCall[] {
+  return calls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    input: structuredClone(call.input),
+  }))
 }
 
-function flushRuntimeEvents(ctx: RunContext): AgentEvent[] {
-  const queue = runtimeEventQueues.get(ctx.runtime)
-  if (!queue?.length) return []
-  return queue.splice(0)
+function createResponseView(response: ChatResponse): Readonly<ChatResponse> {
+  return deepFreeze({
+    message: new AssistantMessage(structuredClone(response.message.content), {
+      metadata: structuredClone(response.message.metadata),
+    }),
+    usage: structuredClone(response.usage),
+    stopReason: response.stopReason,
+  })
 }
 
 function bindMiddlewareState(state: AgentState, middleware: AgentMiddleware[]): void {
@@ -291,16 +261,8 @@ function initLoopInfra(
   }
 }
 
-/**
- * 创建 Agent Loop 的运行上下文，包括：
- * 1. 运行时上下文（RunContext），包含 state、props、runtime 和 loopState
- * 2. loopState 包含 turnIndex、stopReason、lastResponse、pendingToolCalls 和 stateRevision
- * 3. runtime 包含 provider、system、tools、middleware、signal 和 emit 方法
- * @param args
- * @returns
- */
-function createRunContext(args: {
-  state: AgentState
+/** 创建框架内部可写、对中间件只读的 runtime。 */
+function createRuntimeHandle(args: {
   props: Readonly<Record<string, unknown>>
   runId: string
   provider: LLMProvider
@@ -308,39 +270,97 @@ function createRunContext(args: {
   tools: ToolDefinition[]
   middleware: AgentMiddleware[]
   signal: AbortSignal
-  initialTurnIndex: number
-  notifyStateChanged: (reason: string, keys?: string[]) => void
-}): RunContext {
-  const loopState: AgentLoopState = {
-    turnIndex: args.initialTurnIndex,
+  checkpointState?: SerializableRuntimeState
+}): RuntimeHandle {
+  const state: {
+    startedAt: number
+    turnIndex: number
+    stopReason: RunResult['stopReason']
+    lastResponse: Readonly<ChatResponse> | undefined
+    pendingToolCalls: PendingToolCall[]
+  } = {
+    startedAt: args.checkpointState?.startedAt ?? Date.now(),
+    turnIndex: args.checkpointState?.turnIndex ?? 0,
     stopReason: 'end_turn',
-    lastResponse: undefined,
-    pendingToolCalls: [],
-    stateRevision: 0,
+    lastResponse: undefined as Readonly<ChatResponse> | undefined,
+    pendingToolCalls: normalizePendingToolCalls(args.checkpointState?.pendingToolCalls ?? []),
   }
-  const eventQueue: AgentEvent[] = []
+  let pendingToolCallsView = createPendingToolCallsView(state.pendingToolCalls)
+  const eventQueue: CustomAgentEvent[] = []
+  const eventListeners = new Set<() => void>()
 
-  const runtime: AgentRuntime = {
+  const runtime = Object.freeze<AgentRuntime>({
     runId: args.runId,
+    startedAt: state.startedAt,
+    props: Object.freeze({ ...args.props }),
     provider: args.provider,
     system: args.system,
-    tools: [...args.tools],
-    middleware: args.middleware,
+    tools: Object.freeze([...args.tools]),
+    middleware: Object.freeze([...args.middleware]),
     signal: args.signal,
-    emit(event) {
-      eventQueue.push(event)
+    get turnIndex() {
+      return state.turnIndex
     },
-    notifyStateChanged(reason, keys) {
-      args.notifyStateChanged(reason, keys)
+    get stopReason() {
+      return state.stopReason
     },
-  }
-  runtimeEventQueues.set(runtime, eventQueue)
+    get lastResponse() {
+      return state.lastResponse
+    },
+    get pendingToolCalls() {
+      return pendingToolCallsView
+    },
+    emitCustomAgentEvent(event) {
+      eventQueue.push({
+        type: 'custom',
+        runId: args.runId,
+        turnIndex: state.turnIndex,
+        source: event.source,
+        name: event.name,
+        payload: structuredClone(event.payload),
+      })
+      for (const listener of eventListeners) listener()
+    },
+  })
 
   return {
-    state: args.state,
-    props: args.props,
     runtime,
-    loopState,
+    get turnIndex() {
+      return state.turnIndex
+    },
+    get stopReason() {
+      return state.stopReason
+    },
+    setTurnIndex(turnIndex) {
+      state.turnIndex = turnIndex
+    },
+    setStopReason(stopReason) {
+      state.stopReason = stopReason
+    },
+    setLastResponse(response) {
+      state.lastResponse = response ? createResponseView(response) : undefined
+    },
+    setPendingToolCalls(calls) {
+      state.pendingToolCalls = normalizePendingToolCalls(calls)
+      pendingToolCallsView = createPendingToolCallsView(state.pendingToolCalls)
+    },
+    createCheckpointState() {
+      return {
+        startedAt: state.startedAt,
+        turnIndex: state.turnIndex,
+        pendingToolCalls: structuredClone(state.pendingToolCalls),
+      }
+    },
+    drainEvents() {
+      return eventQueue.splice(0, eventQueue.length)
+    },
+    hasEvents() {
+      return eventQueue.length > 0
+    },
+    subscribeEvents(listener) {
+      eventListeners.add(listener)
+      return () => eventListeners.delete(listener)
+    },
   }
 }
 
@@ -348,7 +368,7 @@ function createModelCallRequest(ctx: RunContext): ModelCallRequest {
   const params = buildChatParams({
     messages: ctx.state.messages,
     system: ctx.runtime.system || undefined,
-    tools: ctx.runtime.tools.length > 0 ? ctx.runtime.tools : undefined,
+    tools: ctx.runtime.tools.length > 0 ? [...ctx.runtime.tools] : undefined,
   })
   return {
     context: ctx,
@@ -367,52 +387,82 @@ function createToolCallRequest(ctx: RunContext, call: ToolCall): ToolCallRequest
   }
 }
 
-/**
- * 1. 发送累计的 AgentEvent 事件
- * 2. 发送 stateChange 事件
- * @param ctx
- * @param tracker
- * @param reason
- */
-function* flushBoundary(
-  ctx: RunContext,
-  tracker: StateTracker,
-  reason: string,
-): Generator<AgentEvent> {
-  for (const event of flushRuntimeEvents(ctx)) yield event
-  const stateEvent = tracker.flush(reason)
-  if (stateEvent) yield stateEvent
+function* drainRuntimeEvents(runtimeHandle: RuntimeHandle): Generator<AgentEvent> {
+  for (const event of runtimeHandle.drainEvents()) yield event
+}
+
+/** 等待异步框架操作时，持续把中间件事件转发到 Agent 事件流。 */
+async function* awaitRuntimeOperation<T>(
+  operation: Promise<T>,
+  runtimeHandle: RuntimeHandle,
+): AsyncGenerator<AgentEvent, T, unknown> {
+  let outcome:
+    | { status: 'fulfilled'; value: T }
+    | { status: 'rejected'; error: unknown }
+    | undefined
+  let wake: (() => void) | undefined
+  const unsubscribe = runtimeHandle.subscribeEvents(() => wake?.())
+
+  void operation.then(
+    (value) => {
+      outcome = { status: 'fulfilled', value }
+      wake?.()
+    },
+    (error: unknown) => {
+      outcome = { status: 'rejected', error }
+      wake?.()
+    },
+  )
+
+  try {
+    while (!outcome) {
+      yield* drainRuntimeEvents(runtimeHandle)
+      if (outcome) break
+      if (runtimeHandle.hasEvents()) continue
+      await new Promise<void>((resolve) => {
+        wake = resolve
+        if (outcome) resolve()
+      })
+      wake = undefined
+    }
+    yield* drainRuntimeEvents(runtimeHandle)
+  } finally {
+    unsubscribe()
+    wake?.()
+  }
+
+  const settled = outcome
+  if (!settled) throw new Error('异步运行操作未产生结果')
+  if (settled.status === 'rejected') throw settled.error
+  return settled.value
 }
 
 function makeCheckpoint(
   ctx: RunContext,
-  pendingCalls: ToolCall[],
+  runtimeHandle: RuntimeHandle,
   reason: string,
   payload?: Record<string, unknown>,
 ): SessionCheckpoint {
   return {
     state: serializeAgentState(ctx.state),
-    pendingToolCalls: pendingCalls.map((call) => ({
-      id: call.id,
-      name: call.name,
-      input: call.input,
-    })),
+    runtime: runtimeHandle.createCheckpointState(),
     reason,
     payload,
-    turnIndex: ctx.loopState.turnIndex,
     suspendedAt: Date.now(),
   }
 }
 
 function makeSuspendedEvent(
   ctx: RunContext,
+  runtimeHandle: RuntimeHandle,
   pendingCalls: ToolCall[],
   reason: string,
   payload?: Record<string, unknown>,
 ): AgentEvent {
+  runtimeHandle.setPendingToolCalls(pendingCalls)
   return {
     type: 'suspended',
-    checkpoint: makeCheckpoint(ctx, pendingCalls, reason, payload),
+    checkpoint: makeCheckpoint(ctx, runtimeHandle, reason, payload),
     reason,
     payload,
   }
@@ -421,6 +471,7 @@ function makeSuspendedEvent(
 async function* executeToolBatch(
   toolCalls: ToolCall[],
   ctx: RunContext,
+  runtimeHandle: RuntimeHandle,
   toolMap: Map<string, Tool>,
   wrappedToolCall: ToolCallHandler,
 ): AsyncGenerator<AgentEvent, ToolBatchResult, unknown> {
@@ -433,12 +484,16 @@ async function* executeToolBatch(
       yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
     }
     try {
-      const results = await Promise.all(
-        parallelCalls.map(async (call) => {
-          const output = await wrappedToolCall(createToolCallRequest(ctx, call))
-          return { toolCallId: call.id, toolName: call.name, output }
-        }),
+      const results = yield* awaitRuntimeOperation(
+        Promise.all(
+          parallelCalls.map(async (call) => {
+            const output = await wrappedToolCall(createToolCallRequest(ctx, call))
+            return { toolCallId: call.id, toolName: call.name, output }
+          }),
+        ),
+        runtimeHandle,
       )
+      runtimeHandle.setPendingToolCalls(sequentialCalls)
       for (const result of results) {
         completedResults.set(result.toolCallId, result.output)
         yield {
@@ -454,13 +509,18 @@ async function* executeToolBatch(
       if (isSuspendSignal(err)) {
         return {
           status: 'suspended',
-          event: makeSuspendedEvent(ctx, pending, err.reason, err.payload),
+          event: makeSuspendedEvent(ctx, runtimeHandle, pending, err.reason, err.payload),
         }
       }
       if (ctx.runtime.signal.aborted) {
         return {
           status: 'suspended',
-          event: makeSuspendedEvent(ctx, pending, getAbortReason(ctx.runtime.signal)),
+          event: makeSuspendedEvent(
+            ctx,
+            runtimeHandle,
+            pending,
+            getAbortReason(ctx.runtime.signal),
+          ),
         }
       }
       throw err
@@ -469,11 +529,13 @@ async function* executeToolBatch(
 
   for (let index = 0; index < sequentialCalls.length; index++) {
     const call = sequentialCalls[index]!
+    runtimeHandle.setPendingToolCalls(sequentialCalls.slice(index))
     if (ctx.runtime.signal.aborted) {
       return {
         status: 'suspended',
         event: makeSuspendedEvent(
           ctx,
+          runtimeHandle,
           sequentialCalls.slice(index),
           getAbortReason(ctx.runtime.signal),
         ),
@@ -483,8 +545,12 @@ async function* executeToolBatch(
     yield { type: 'tool_executing', toolCallId: call.id, toolName: call.name, input: call.input }
 
     try {
-      const output = await wrappedToolCall(createToolCallRequest(ctx, call))
+      const output = yield* awaitRuntimeOperation(
+        wrappedToolCall(createToolCallRequest(ctx, call)),
+        runtimeHandle,
+      )
       completedResults.set(call.id, output)
+      runtimeHandle.setPendingToolCalls(sequentialCalls.slice(index + 1))
       yield {
         type: 'tool_result',
         toolCallId: call.id,
@@ -497,13 +563,18 @@ async function* executeToolBatch(
       if (isSuspendSignal(err)) {
         return {
           status: 'suspended',
-          event: makeSuspendedEvent(ctx, pending, err.reason, err.payload),
+          event: makeSuspendedEvent(ctx, runtimeHandle, pending, err.reason, err.payload),
         }
       }
       if (ctx.runtime.signal.aborted) {
         return {
           status: 'suspended',
-          event: makeSuspendedEvent(ctx, pending, getAbortReason(ctx.runtime.signal)),
+          event: makeSuspendedEvent(
+            ctx,
+            runtimeHandle,
+            pending,
+            getAbortReason(ctx.runtime.signal),
+          ),
         }
       }
       throw err
@@ -521,18 +592,23 @@ function appendToolMessages(
   for (const call of toolCalls) {
     const output = results.get(call.id)
     if (!output) continue
-    const metadata: Record<string, unknown> = {}
-    if (output.metadata?.type === 'image' && typeof output.metadata.base64 === 'string') {
-      metadata.imageData = {
-        base64: output.metadata.base64,
-        mediaType: output.metadata.mediaType as string,
+    let image: ImageSource | undefined
+    if (
+      output.metadata?.type === 'image' &&
+      typeof output.metadata.base64 === 'string' &&
+      typeof output.metadata.mediaType === 'string'
+    ) {
+      image = {
+        type: 'base64',
+        data: output.metadata.base64,
+        mediaType: output.metadata.mediaType,
       }
     }
     const toolMessage = new ToolMessage(
       call.id,
       call.name,
       output.isError ? `Error: ${output.content}` : output.content,
-      { metadata },
+      { image },
     )
     ctx.state.messages.push(toolMessage)
   }
@@ -541,70 +617,73 @@ function appendToolMessages(
 async function* runMainLoop(
   loopCtx: MainLoopContext,
 ): AsyncGenerator<AgentEvent, { stopReason: RunResult['stopReason']; turnIndex: number }> {
-  const { maxTurns, pipeline, wrappedToolCall, wrappedModelCall, toolMap, ctx, tracker } = loopCtx
-  const loopState = ctx.loopState
+  const { maxTurns, pipeline, wrappedToolCall, wrappedModelCall, toolMap, ctx, runtimeHandle } =
+    loopCtx
 
-  while (loopState.turnIndex < maxTurns) {
+  while (runtimeHandle.turnIndex < maxTurns) {
     if (ctx.runtime.signal.aborted) {
-      loopState.stopReason = 'abort'
+      runtimeHandle.setStopReason('abort')
       break
     }
 
-    yield { type: 'turn_start', turnIndex: loopState.turnIndex }
+    yield { type: 'turn_start', turnIndex: runtimeHandle.turnIndex }
 
-    loopState.lastResponse = undefined
-    await pipeline.runBeforeModel(ctx)
-    yield* flushBoundary(ctx, tracker, 'before_model')
+    runtimeHandle.setLastResponse(undefined)
+    yield* awaitRuntimeOperation(pipeline.runBeforeModel(ctx), runtimeHandle)
 
-    const streamResult = await wrappedModelCall(createModelCallRequest(ctx))
-    const response = yield* forwardStreamEvents(streamResult)
+    const streamResult = yield* awaitRuntimeOperation(
+      wrappedModelCall(createModelCallRequest(ctx)),
+      runtimeHandle,
+    )
+    const response = yield* forwardStreamEvents(streamResult, runtimeHandle)
 
-    loopState.lastResponse = response
-    await pipeline.runAfterModel(ctx)
-    yield* flushBoundary(ctx, tracker, 'after_model')
+    runtimeHandle.setLastResponse(response)
+    yield* awaitRuntimeOperation(pipeline.runAfterModel(ctx), runtimeHandle)
 
     ctx.state.messages.push(response.message)
     accumulateUsage(ctx.state, response.usage)
-    yield* flushBoundary(ctx, tracker, 'assistant_message')
 
     const toolCalls = extractToolCalls(getAssistantBlocks(response))
-    loopState.pendingToolCalls = toolCalls.map((call) => ({
-      id: call.id,
-      name: call.name,
-      input: call.input,
-    }))
+    runtimeHandle.setPendingToolCalls(
+      toolCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        input: call.input,
+      })),
+    )
 
     if (toolCalls.length === 0) {
-      loopState.stopReason = 'end_turn'
-      yield { type: 'turn_end', turnIndex: loopState.turnIndex, usage: response.usage }
-      yield* flushBoundary(ctx, tracker, 'turn_end')
+      runtimeHandle.setStopReason('end_turn')
+      yield { type: 'turn_end', turnIndex: runtimeHandle.turnIndex, usage: response.usage }
       break
     }
 
-    const batchResult = yield* executeToolBatch(toolCalls, ctx, toolMap, wrappedToolCall)
-    yield* flushBoundary(ctx, tracker, 'tool_batch')
-
+    const batchResult = yield* executeToolBatch(
+      toolCalls,
+      ctx,
+      runtimeHandle,
+      toolMap,
+      wrappedToolCall,
+    )
     if (batchResult.status === 'suspended') {
       yield batchResult.event
-      loopState.stopReason = 'suspended'
+      runtimeHandle.setStopReason('suspended')
       break
     }
 
     appendToolMessages(ctx, toolCalls, batchResult.results)
-    loopState.pendingToolCalls = []
-    yield* flushBoundary(ctx, tracker, 'tool_messages')
+    runtimeHandle.setPendingToolCalls([])
 
-    yield { type: 'turn_end', turnIndex: loopState.turnIndex, usage: response.usage }
-    yield* flushBoundary(ctx, tracker, 'turn_end')
+    yield { type: 'turn_end', turnIndex: runtimeHandle.turnIndex, usage: response.usage }
 
-    loopState.turnIndex++
-    if (loopState.turnIndex >= maxTurns) {
-      loopState.stopReason = 'max_turns'
+    runtimeHandle.setTurnIndex(runtimeHandle.turnIndex + 1)
+    if (runtimeHandle.turnIndex >= maxTurns) {
+      runtimeHandle.setStopReason('max_turns')
       break
     }
   }
 
-  return { stopReason: loopState.stopReason, turnIndex: loopState.turnIndex }
+  return { stopReason: runtimeHandle.stopReason, turnIndex: runtimeHandle.turnIndex }
 }
 
 export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGenerator<AgentEvent> {
@@ -616,9 +695,7 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
   const props = Object.freeze(callerProps ?? {})
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 
-  const trackerRef: { current?: StateTracker } = {}
-  const ctx = createRunContext({
-    state,
+  const runtimeHandle = createRuntimeHandle({
     props,
     runId,
     provider: infra.provider,
@@ -626,20 +703,13 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     tools: infra.toolDefinitions,
     middleware: config.middleware,
     signal: infra.signal,
-    initialTurnIndex: 0,
-    notifyStateChanged(reason, keys) {
-      trackerRef.current?.notify(reason, keys)
-    },
   })
-  const tracker = createStateTracker(state, runId, ctx.loopState)
-  trackerRef.current = tracker
+  const ctx: RunContext = { state, runtime: runtimeHandle.runtime }
 
   yield { type: 'agent_run_start', runId, messages: state.messages }
-  yield* flushBoundary(ctx, tracker, 'agent_run_start')
 
   try {
-    await infra.pipeline.runBeforeAgent(ctx)
-    yield* flushBoundary(ctx, tracker, 'before_agent')
+    yield* awaitRuntimeOperation(infra.pipeline.runBeforeAgent(ctx), runtimeHandle)
 
     yield* runMainLoop({
       maxTurns,
@@ -648,14 +718,13 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
       wrappedModelCall: infra.wrappedModelCall,
       toolMap: infra.toolMap,
       ctx,
-      tracker,
+      runtimeHandle,
     })
   } catch (err) {
-    ctx.loopState.stopReason = infra.signal.aborted ? 'abort' : 'error'
+    runtimeHandle.setStopReason(infra.signal.aborted ? 'abort' : 'error')
     throw err
   } finally {
-    await infra.pipeline.runAfterAgent(ctx)
-    yield* flushBoundary(ctx, tracker, 'after_agent')
+    yield* awaitRuntimeOperation(infra.pipeline.runAfterAgent(ctx), runtimeHandle)
   }
 
   const runUsage = {
@@ -670,9 +739,9 @@ export async function* runLoop(params: RunParams, config: LoopConfig): AsyncGene
     runId,
     usage: runUsage,
     messages: state.messages,
-    stopReason: ctx.loopState.stopReason,
+    state: serializeAgentState(state),
+    stopReason: runtimeHandle.stopReason,
   }
-  yield* flushBoundary(ctx, tracker, 'agent_run_end')
 }
 
 export async function* runLoopFromCheckpoint(
@@ -680,7 +749,7 @@ export async function* runLoopFromCheckpoint(
   config: LoopConfig,
 ): AsyncGenerator<AgentEvent> {
   const { checkpoint, decisions } = params
-  const { pendingToolCalls, turnIndex: resumeTurnIndex } = checkpoint
+  const { pendingToolCalls, turnIndex: resumeTurnIndex } = checkpoint.runtime
   const state = deserializeAgentState(checkpoint.state)
   const maxTurns = params.config?.maxTurns ?? config.maxTurns
   const externalSignal = params.config?.signal
@@ -689,9 +758,7 @@ export async function* runLoopFromCheckpoint(
   const props = Object.freeze(params.props ?? {})
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 
-  const trackerRef: { current?: StateTracker } = {}
-  const ctx = createRunContext({
-    state,
+  const runtimeHandle = createRuntimeHandle({
     props,
     runId,
     provider: infra.provider,
@@ -699,22 +766,17 @@ export async function* runLoopFromCheckpoint(
     tools: infra.toolDefinitions,
     middleware: config.middleware,
     signal: infra.signal,
-    initialTurnIndex: resumeTurnIndex,
-    notifyStateChanged(reason, keys) {
-      trackerRef.current?.notify(reason, keys)
-    },
+    checkpointState: checkpoint.runtime,
   })
-  const tracker = createStateTracker(state, runId, ctx.loopState)
-  trackerRef.current = tracker
+  const ctx: RunContext = { state, runtime: runtimeHandle.runtime }
 
   yield { type: 'agent_run_start', runId, messages: state.messages }
-  yield* flushBoundary(ctx, tracker, 'agent_run_start')
 
   try {
-    await infra.pipeline.runBeforeAgent(ctx)
-    yield* flushBoundary(ctx, tracker, 'before_agent')
+    yield* awaitRuntimeOperation(infra.pipeline.runBeforeAgent(ctx), runtimeHandle)
 
-    for (const call of pendingToolCalls) {
+    for (let index = 0; index < pendingToolCalls.length; index++) {
+      const call = pendingToolCalls[index]!
       const decision: ToolCallDecision | undefined = decisions[call.id]
       if (decision?.action === 'deny') {
         state.messages.push(
@@ -724,16 +786,24 @@ export async function* runLoopFromCheckpoint(
             `Error: 用户拒绝执行此操作${decision.reason ? ': ' + decision.reason : ''}`,
           ),
         )
+        runtimeHandle.setPendingToolCalls(pendingToolCalls.slice(index + 1))
         continue
       }
 
       const input = decision?.action === 'modify' ? decision.input : call.input
-      const output = await infra.wrappedToolCall(
-        createToolCallRequest(ctx, {
-          id: call.id,
-          name: call.name,
-          input,
-        }),
+      runtimeHandle.setPendingToolCalls([
+        { id: call.id, name: call.name, input },
+        ...pendingToolCalls.slice(index + 1),
+      ])
+      const output = yield* awaitRuntimeOperation(
+        infra.wrappedToolCall(
+          createToolCallRequest(ctx, {
+            id: call.id,
+            name: call.name,
+            input,
+          }),
+        ),
+        runtimeHandle,
       )
       state.messages.push(
         new ToolMessage(
@@ -742,11 +812,11 @@ export async function* runLoopFromCheckpoint(
           output.isError ? `Error: ${output.content}` : output.content,
         ),
       )
+      runtimeHandle.setPendingToolCalls(pendingToolCalls.slice(index + 1))
     }
-    ctx.loopState.pendingToolCalls = []
-    yield* flushBoundary(ctx, tracker, 'resume_pending_tools')
+    runtimeHandle.setPendingToolCalls([])
 
-    ctx.loopState.turnIndex = resumeTurnIndex + 1
+    runtimeHandle.setTurnIndex(resumeTurnIndex + 1)
     yield* runMainLoop({
       maxTurns,
       pipeline: infra.pipeline,
@@ -754,14 +824,13 @@ export async function* runLoopFromCheckpoint(
       wrappedModelCall: infra.wrappedModelCall,
       toolMap: infra.toolMap,
       ctx,
-      tracker,
+      runtimeHandle,
     })
   } catch (err) {
-    ctx.loopState.stopReason = infra.signal.aborted ? 'abort' : 'error'
+    runtimeHandle.setStopReason(infra.signal.aborted ? 'abort' : 'error')
     throw err
   } finally {
-    await infra.pipeline.runAfterAgent(ctx)
-    yield* flushBoundary(ctx, tracker, 'after_agent')
+    yield* awaitRuntimeOperation(infra.pipeline.runAfterAgent(ctx), runtimeHandle)
   }
 
   const runUsage = {
@@ -776,9 +845,9 @@ export async function* runLoopFromCheckpoint(
     runId,
     usage: runUsage,
     messages: state.messages,
-    stopReason: ctx.loopState.stopReason,
+    state: serializeAgentState(state),
+    stopReason: runtimeHandle.stopReason,
   }
-  yield* flushBoundary(ctx, tracker, 'agent_run_end')
 }
 
 export { SuspendSignal, isSuspendSignal, serializeAgentState, deserializeAgentState }

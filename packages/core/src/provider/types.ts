@@ -23,6 +23,8 @@ export interface ProviderConfig {
   headers?: Record<string, string>
   /** 所有调用的默认生成参数，可被 CallOptions.modelParams 覆盖 */
   defaultParams?: ModelParams
+  /** 请求总超时（毫秒），默认 300000；可被 CallOptions.timeoutMs 覆盖 */
+  timeoutMs?: number
 }
 
 // === 聊天参数（Provider 输入）===
@@ -45,6 +47,8 @@ export interface ChatResponse {
 
 export interface CallOptions {
   signal?: AbortSignal
+  /** 仅本次调用生效的请求总超时（毫秒） */
+  timeoutMs?: number
   /** 仅本次调用生效的参数覆盖（浅合并 ProviderConfig.defaultParams） */
   modelParams?: ModelParams
 }

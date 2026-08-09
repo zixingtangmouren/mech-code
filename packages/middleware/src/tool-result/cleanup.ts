@@ -1,10 +1,6 @@
 import { estimateTokens } from '@mech-code/core'
 import type { RunContext } from '@mech-code/core'
-import {
-  TOOL_RESULT_STATE_KEY,
-  type ResolvedToolResultCleanupOptions,
-  type ToolResultState,
-} from './types.js'
+import type { ResolvedToolResultCleanupOptions, ToolResultState } from './types.js'
 import { getToolMessages } from './visibility.js'
 
 export function applyToolResultCleanup(
@@ -41,7 +37,6 @@ export function applyToolResultCleanup(
     lastCleanupAt: Date.now(),
     clearedToolResultCount: (state.cleanup.clearedToolResultCount ?? 0) + cleared,
   }
-  ctx.runtime.notifyStateChanged('tool_result_cleanup', [TOOL_RESULT_STATE_KEY])
 }
 
 function readCreatedAt(metadata: Record<string, unknown>): number | undefined {

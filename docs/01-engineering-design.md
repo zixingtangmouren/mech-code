@@ -32,48 +32,51 @@ mech-code 是一个面向开发者的终端 CLI 产品，定位类似 Claude Cod
 
 ```
 mech-code/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                # CI 流水线（typecheck / lint / build / test）
-├── src/
-│   ├── index.ts                  # CLI 入口，注册所有命令
-│   ├── commands/                 # 子命令层（commander action 处理器）
-│   │   ├── chat.ts
-│   │   ├── chat.test.ts
-│   │   └── index.ts
-│   ├── core/                     # 核心业务逻辑
-│   │   ├── llm/
-│   │   │   ├── client.ts         # LLM SDK 封装（Anthropic / OpenAI）
-│   │   │   ├── client.test.ts
-│   │   │   └── stream.ts         # 流式输出处理
-│   │   ├── session/              # 对话上下文管理
-│   │   │   └── context.ts
-│   │   └── tools/                # Tool use / Function calling 注册
-│   │       └── index.ts
-│   ├── ui/                       # ink 终端 UI 组件
-│   │   ├── App.tsx               # 根组件
-│   │   ├── components/
-│   │   │   ├── MessageList.tsx   # 消息列表渲染
-│   │   │   ├── InputBox.tsx      # 用户输入框
-│   │   │   └── Spinner.tsx       # 加载动画
-│   │   └── components.test.tsx
-│   ├── utils/                    # 纯函数工具
-│   │   ├── format.ts
-│   │   ├── format.test.ts
-│   │   └── logger.ts
-│   └── types/                    # 全局 TypeScript 类型定义
-│       └── index.ts
-├── dist/                         # 构建产物（已 gitignore）
-├── docs/                         # 项目文档
-├── .eslintrc.js
-├── .prettierrc
-├── .gitignore
-├── commitlint.config.js
-├── tsconfig.json
-├── tsup.config.ts
-├── vitest.config.ts
-└── package.json
+├── .changeset/                   # Changesets 发布配置
+├── .github/workflows/            # CI 流水线
+├── docs/                         # 设计文档与当前架构说明
+├── packages/
+│   ├── shared/                   # 跨包协议类型与通用函数
+│   │   └── src/
+│   ├── core/                     # Agent 核心框架
+│   │   ├── examples/             # SDK 使用示例
+│   │   └── src/
+│   │       ├── agent/            # Agent 外观、循环、状态与 HITL
+│   │       ├── events/           # AgentEvent 事件流
+│   │       ├── mcp/              # MCP 客户端与协议类型
+│   │       ├── message/          # 消息构造、快照与流式累积
+│   │       ├── middleware/       # 中间件协议与执行管道
+│   │       ├── provider/         # Anthropic、OpenAI 等 Provider
+│   │       ├── skills/           # Skill 类型与注册表
+│   │       └── tools/            # Tool 协议、定义与注册表
+│   ├── tools/                    # 可直接使用的内置工具
+│   │   └── src/
+│   │       ├── bash/             # Shell 执行与输出处理
+│   │       ├── read-file.ts
+│   │       ├── write-file.ts
+│   │       └── edit-file.ts
+│   ├── middleware/               # 可直接使用的内置中间件
+│   │   └── src/
+│   │       ├── context-compact/  # 上下文压缩
+│   │       ├── tool-result/      # 工具结果管理
+│   │       └── todo.ts           # Todo 状态管理
+│   └── cli/                      # Commander + React Ink 终端应用
+│       └── src/
+│           ├── adapters/         # Core 事件到 UI 的适配
+│           ├── commands/         # CLI 子命令
+│           ├── config/           # 配置加载与中间件装配
+│           ├── prompts/          # 系统提示词构建
+│           └── ui/               # Ink 页面、组件与 hooks
+├── package.json                  # Workspace 脚本与开发依赖
+├── pnpm-workspace.yaml           # pnpm workspace 定义
+├── tsconfig.json                 # TypeScript 基础配置
+├── eslint.config.js              # ESLint 配置
+├── vitest.config.ts              # Vitest 配置
+├── commitlint.config.js          # Commitlint 配置
+└── .prettierrc                   # Prettier 配置
 ```
+
+各包构建后会生成 `dist/`，安装依赖后会生成 `node_modules/`；这些生成目录不属于源码结构，未在上图中列出。测试统一放在对应源文件同级的 `__tests__/` 目录中。
 
 ---
 
@@ -81,10 +84,10 @@ mech-code/
 
 ### 4.1 构建（tsup）
 
-- 入口：`src/index.ts`
+- CLI 入口：`packages/cli/src/index.ts`
 - 输出格式：ESM（`"type": "module"`）
 - Target：Node.js 20+
-- 自动注入 `#!/usr/bin/env node` shebang，产物可直接作为可执行文件
+- 各包分别通过自己的 `tsup.config.ts` 构建到包内 `dist/`；CLI 产物会注入 `#!/usr/bin/env node` shebang，可直接作为可执行文件
 
 ### 4.2 代码规范
 
@@ -103,8 +106,8 @@ Conventional Commits 类型枚举：`feat` / `fix` / `chore` / `docs` / `style` 
 
 ### 4.4 测试策略
 
-- 测试文件与源文件**同目录 colocate**（`xxx.test.ts`）
-- 单元测试覆盖：utils / core 业务逻辑 / ink 组件（ink-testing-library）
+- 测试目录与源文件**同级 colocate**（`__tests__/*.test.ts`）
+- 单元测试覆盖：core、tools、middleware 与 CLI 配置等关键逻辑
 - CI 阶段输出 lcov 覆盖率报告
 - pre-commit 阶段**不强制跑测试**（避免影响提交速度），测试在 CI 中执行
 

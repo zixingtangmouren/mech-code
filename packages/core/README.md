@@ -189,6 +189,7 @@ interface ProviderConfig {
   baseUrl?: string
   protocol?: 'chat' | 'responses'
   headers?: Record<string, string>
+  timeoutMs?: number
   defaultParams?: {
     temperature?: number
     maxTokens?: number
@@ -199,12 +200,12 @@ interface ProviderConfig {
 }
 ```
 
-`protocol` applies to OpenAI-style providers and defaults to `chat`. Set `baseUrl` for proxies or custom endpoints. `defaultParams` applies to every call and is shallow-merged with per-call `modelParams` when you use `provider.chat()` or `provider.stream()` directly.
+`protocol` applies to OpenAI-style providers and defaults to `chat`. Set `baseUrl` for proxies or custom endpoints. Requests time out after 300,000 ms by default; `timeoutMs` can configure the provider default and the per-call option can override it. `defaultParams` applies to every call and is shallow-merged with per-call `modelParams` when you use `provider.chat()` or `provider.stream()` directly.
 
 ```ts
 const response = await openai.chat(
   { messages: [new UserMessage('Say hello.')] },
-  { modelParams: { temperature: 0.2, maxTokens: 100 } },
+  { modelParams: { temperature: 0.2, maxTokens: 100 }, timeoutMs: 60_000 },
 )
 
 const { stream, final, abort } = openai.stream({
@@ -239,7 +240,7 @@ const searchTool = defineTool({
   async execute({ query, path }, context) {
     return {
       content: `Search ${path} for ${query}`,
-      metadata: { requestId: context.props.requestId },
+      metadata: { requestId: context.runtime.props.requestId },
     }
   },
 })
@@ -301,9 +302,14 @@ const loggingMiddleware = createMiddleware({
   name: 'logging',
   state: { modelCalls: 0 },
   beforeModel(ctx) {
-    ctx.state.modelCalls = Number(ctx.state.modelCalls) + 1
-    ctx.runtime.notifyStateChanged('model_call_counted', ['modelCalls'])
-    console.log('turn', ctx.loopState.turnIndex)
+    const modelCalls = Number(ctx.state.modelCalls) + 1
+    ctx.state.modelCalls = modelCalls
+    ctx.runtime.emitCustomAgentEvent({
+      source: 'logging',
+      name: 'model_call_counted',
+      payload: { modelCalls },
+    })
+    console.log('turn', ctx.runtime.turnIndex)
   },
   async wrapToolCall(request, handler) {
     const startedAt = Date.now()
@@ -335,7 +341,7 @@ Use the `Middleware` base class when a class with private runtime fields is a be
 | `reasoning_start`, `reasoning_content`, `reasoning_end`                       | Streaming model reasoning.          |
 | `text_start`, `text_delta`, `text_end`                                        | Streaming assistant text.           |
 | `tool_start`, `tool_input_delta`, `tool_executing`, `tool_result`, `tool_end` | Tool-call progress and output.      |
-| `state_changed`                                                               | Serializable state snapshot.        |
+| `custom`                                                                      | Serializable middleware event.      |
 | `suspended`                                                                   | A checkpoint that needs a decision. |
 
 Use a discriminated switch for exhaustive handling:
@@ -365,26 +371,20 @@ try {
   await agent.complete({ state })
 } catch (error) {
   if (error instanceof ProviderError) {
-    console.error(error.provider, error.code, error.retryable)
+    console.error(error.provider, error.code, error.retryable, error.requestId)
   } else {
     throw error
   }
 }
 ```
 
-| Code               | Retryable |
-| ------------------ | --------- |
-| `auth_failed`      | No        |
-| `rate_limited`     | Yes       |
-| `context_too_long` | No        |
-| `model_not_found`  | No        |
-| `server_error`     | Yes       |
-| `network_error`    | Yes       |
-| `invalid_request`  | No        |
-| `aborted`          | No        |
-| `unknown`          | No        |
+| Codes                                                                                                        | Retryable |
+| ------------------------------------------------------------------------------------------------------------ | --------- |
+| `rate_limited`, `timeout`, `overloaded`, `server_error`, `network_error`                                     | Yes       |
+| `auth_failed`, `permission_denied`, `billing_error`, `quota_exceeded`, `context_too_long`, `model_not_found` | No        |
+| `not_found`, `request_too_large`, `conflict`, `invalid_response`, `invalid_request`, `aborted`, `unknown`    | No        |
 
-Use `error.retryable` rather than hard-coding this table in application logic. The exported `retryStreamResult()` helper is available when implementing retry middleware around a streaming provider call.
+`ProviderError` also exposes `status`, `vendorCode`, `requestId`, and `retryAfterMs` when the provider supplies them. Use `error.retryable` rather than hard-coding this table in application logic, and honor `retryAfterMs` before applying exponential backoff. The exported `retryStreamResult()` helper is available when implementing retry middleware around a streaming provider call.
 
 ## Pause for Human Approval
 
@@ -398,7 +398,7 @@ const sensitiveTools = new Set(['write_file', 'run_command'])
 const approvalMiddleware = createMiddleware({
   name: 'approval',
   async wrapToolCall(request, handler) {
-    if (!sensitiveTools.has(request.toolName) || request.context.props.approved === true) {
+    if (!sensitiveTools.has(request.toolName) || request.context.runtime.props.approved === true) {
       return handler(request)
     }
 
@@ -418,7 +418,10 @@ const firstRun = await agent.complete({ state })
 
 if (firstRun.stopReason === 'suspended' && firstRun.checkpoint) {
   const decisions = Object.fromEntries(
-    firstRun.checkpoint.pendingToolCalls.map((call) => [call.id, { action: 'approve' as const }]),
+    firstRun.checkpoint.runtime.pendingToolCalls.map((call) => [
+      call.id,
+      { action: 'approve' as const },
+    ]),
   )
 
   for await (const event of agent.resume({
@@ -431,7 +434,7 @@ if (firstRun.stopReason === 'suspended' && firstRun.checkpoint) {
 }
 ```
 
-Each decision can `approve`, `deny` with an optional reason, or `modify` the tool input. `resume()` reconstructs state from the checkpoint, applies the decisions, executes remaining tools, and continues the Agent loop. It does not mutate the original pre-resume `state` object; consume `state_changed` snapshots or the final events if the caller needs to persist the resumed state.
+Each decision can `approve`, `deny` with an optional reason, or `modify` the tool input. `resume()` reconstructs state from the checkpoint, applies the decisions, executes remaining tools, and continues the Agent loop. It does not mutate the original pre-resume `state` object; consume `agent_run_end.state` if the caller needs to persist the resumed final state.
 
 ## Messages and Persistence
 

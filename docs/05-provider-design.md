@@ -8,14 +8,14 @@ Provider 层负责将 Agent Loop 的统一消息格式与各 LLM 厂商的 API �
 
 ## 分层原则
 
-| 能力                        | 归属                         | 理由                           |
-| --------------------------- | ---------------------------- | ------------------------------ |
-| 消息格式转换（内部 ↔ 厂商） | Provider 内核                | 厂商差异必须封装               |
-| 流式 + 非流式 API 调用      | Provider 内核                | 基本通信能力                   |
-| stream + final 双通道返回   | Provider 内核                | 调用方人体工学                 |
-| 错误类型归一化              | Provider 内核                | 协议层统一；处理策略交由中间件 |
-| 重试机制                    | 中间件                       | 策略可插拔，不应内嵌           |
-| 模型参数配置                | ProviderConfig + CallOptions | 构造时默认 + 单次调用覆盖      |
+| 能力                                | 归属                         | 理由                           |
+| ----------------------------------- | ---------------------------- | ------------------------------ |
+| 消息格式转换（AgentMessage → 厂商） | Provider 内核                | 厂商差异必须封装               |
+| 流式 + 非流式 API 调用              | Provider 内核                | 基本通信能力                   |
+| stream + final 双通道返回           | Provider 内核                | 调用方人体工学                 |
+| 错误类型归一化                      | Provider 内核                | 协议层统一；处理策略交由中间件 |
+| 重试机制                            | 中间件                       | 策略可插拔，不应内嵌           |
+| 模型参数配置                        | ProviderConfig + CallOptions | 构造时默认 + 单次调用覆盖      |
 
 ---
 
@@ -55,7 +55,7 @@ interface ChatParams {
 
 ```typescript
 interface ChatResponse {
-  content: AssistantContentBlock[]
+  message: AssistantMessage
   usage: Usage
   stopReason: string
 }
@@ -106,6 +106,8 @@ const response = await final // 拿最终结果决定下一步
 ```typescript
 interface CallOptions {
   signal?: AbortSignal
+  /** 本次请求的总超时，可覆盖 ProviderConfig.timeoutMs */
+  timeoutMs?: number
   /** 本次调用的参数覆盖（不污染 Provider 全局配置） */
   modelParams?: ModelParams
 }
@@ -157,6 +159,8 @@ interface ProviderConfig {
   baseUrl?: string
   headers?: Record<string, string>
   defaultParams?: ModelParams
+  /** 请求总超时（毫秒），默认 300000 */
+  timeoutMs?: number
 }
 ```
 
@@ -168,16 +172,19 @@ interface ProviderConfig {
 
 ```typescript
 class ProviderError extends Error {
+  readonly retryable: boolean
+  readonly cause?: unknown
+  readonly status?: number
+  readonly vendorCode?: string
+  readonly requestId?: string
+  readonly retryAfterMs?: number
+
   constructor(
     public readonly code: ProviderErrorCode,
     public readonly provider: string,
     message: string,
-    public readonly cause?: unknown,
-    public readonly retryable: boolean = false,
-  ) {
-    super(message)
-    this.name = 'ProviderError'
-  }
+    options?: ProviderErrorOptions,
+  )
 }
 ```
 
@@ -185,33 +192,57 @@ class ProviderError extends Error {
 
 ```typescript
 type ProviderErrorCode =
-  | 'auth_failed' // 401/403
-  | 'rate_limited' // 429（retryable）
-  | 'context_too_long' // 上下文超限
-  | 'model_not_found' // 模型不存在
-  | 'server_error' // 5xx（retryable）
-  | 'network_error' // 网络层异常（retryable）
-  | 'invalid_request' // 4xx 参数错误
-  | 'aborted' // 用户主动中止
-  | 'unknown' // 未分类错误
+  | 'auth_failed'
+  | 'permission_denied'
+  | 'billing_error'
+  | 'quota_exceeded'
+  | 'rate_limited'
+  | 'context_too_long'
+  | 'model_not_found'
+  | 'not_found'
+  | 'request_too_large'
+  | 'conflict'
+  | 'timeout'
+  | 'overloaded'
+  | 'server_error'
+  | 'network_error'
+  | 'invalid_response'
+  | 'invalid_request'
+  | 'aborted'
+  | 'unknown'
 ```
 
 ### 错误翻译规则
 
-Provider 负责将厂商响应翻译为统一 `ProviderError`：
+Provider 先解析厂商 JSON 错误结构，再使用 HTTP 状态码兜底。不能只根据状态码决定是否重试，例如 OpenAI 的 429 同时表示临时限流和余额/配额耗尽。
 
-| HTTP 状态 / 错误       | ProviderErrorCode  | retryable |
-| ---------------------- | ------------------ | --------- |
-| 401 / 403              | `auth_failed`      | ❌        |
-| 429                    | `rate_limited`     | ✅        |
-| 400 + "context length" | `context_too_long` | ❌        |
-| 404 + model 相关       | `model_not_found`  | ❌        |
-| 5xx                    | `server_error`     | ✅        |
-| 网络超时 / DNS 失败    | `network_error`    | ✅        |
-| AbortError             | `aborted`          | ❌        |
-| 其他 4xx               | `invalid_request`  | ❌        |
+| HTTP 状态 / 厂商错误                      | ProviderErrorCode   | retryable |
+| ----------------------------------------- | ------------------- | --------- |
+| 401                                       | `auth_failed`       | ❌        |
+| 403                                       | `permission_denied` | ❌        |
+| Anthropic 402 / `billing_error`           | `billing_error`     | ❌        |
+| OpenAI `insufficient_quota`               | `quota_exceeded`    | ❌        |
+| 临时 429 / `rate_limit_error`             | `rate_limited`      | ✅        |
+| 明确的上下文窗口超限                      | `context_too_long`  | ❌        |
+| 404 + 明确的 model not found              | `model_not_found`   | ❌        |
+| 413                                       | `request_too_large` | ❌        |
+| 408 / 504                                 | `timeout`           | ✅        |
+| Anthropic 529 / `overloaded_error`        | `overloaded`        | ✅        |
+| 5xx                                       | `server_error`      | ✅        |
+| 建连失败或响应体中途断开                  | `network_error`     | ✅        |
+| JSON 损坏、结构不合法、流缺少终止事件     | `invalid_response`  | ❌        |
+| 用户 AbortSignal / `StreamResult.abort()` | `aborted`           | ❌        |
 
-中间件读取 `retryable` 字段决策，不关心具体厂商。
+`status`、`vendorCode` 和 `requestId` 用于诊断；`retryAfterMs` 保存厂商 `Retry-After` 指示。中间件读取 `retryable` 决定是否重试，并应优先遵循 `retryAfterMs`，否则使用带 jitter 的指数退避。
+
+### 流内错误
+
+HTTP 200 不代表流一定成功。Provider 在 normalizer 之前校验厂商事件：
+
+- Anthropic `type: "error"`、OpenAI `type: "error"` 和 `response.failed` 直接抛出 `ProviderError`
+- OpenAI `response.incomplete` 保留已经生成的内容，并将原因与 usage 写入最终响应
+- Anthropic 必须收到 `message_stop`；OpenAI Chat 必须收到非空 `finish_reason`；OpenAI Responses 必须收到 `response.completed` 或 `response.incomplete`
+- SSE JSON 损坏、已知事件结构错误或流提前结束统一归类为 `invalid_response`
 
 ---
 
@@ -240,7 +271,7 @@ interface SerializeOptions {
 }
 ```
 
-将 AgentMessage 转换为厂商 API 要求的请求格式。serializer 内部可以先投影为 provider 规范化中间形态，但这个中间形态不暴露给 Agent Loop 和 middleware。
+将规范的 `AgentMessage` 直接转换为厂商 API 要求的请求格式。消息构造器已经保证 user/assistant content 为内容块数组，serializer 只处理厂商字段和能力差异，不再建立通用中间消息类型。
 
 ### StreamNormalizer
 
@@ -250,6 +281,8 @@ interface StreamNormalizer<TVendorChunk = unknown> {
   push(chunk: TVendorChunk): AgentEvent[]
   /** 流结束时刷出缓冲中的剩余事件 */
   flush(): AgentEvent[]
+  /** 返回流结束后的 usage 与 stopReason */
+  getStreamMeta(): StreamMeta
 }
 ```
 
@@ -267,35 +300,15 @@ abstract class BaseProvider implements LLMProvider {
 
   constructor(protected readonly config: ProviderConfig) {}
 
-  /** 子类实现：发送非流式请求 */
-  protected abstract doChat(params: ChatParams, merged: ModelParams): Promise<ChatResponse>
+  abstract chat(params: ChatParams, options?: CallOptions): Promise<ChatResponse>
+  abstract stream(params: ChatParams, options?: CallOptions): StreamResult
 
-  /** 子类实现：发送流式请求，返回厂商原始 chunk 流 */
-  protected abstract doStream(
-    params: ChatParams,
-    merged: ModelParams,
-    signal: AbortSignal,
-  ): AsyncIterable<unknown>
-
-  /** 子类实现：创建对应的 StreamNormalizer */
-  protected abstract createNormalizer(): StreamNormalizer
-
-  // --- 公共实现 ---
-
-  chat(params: ChatParams, options?: CallOptions): Promise<ChatResponse> {
-    const merged = this.mergeParams(options?.modelParams)
-    return this.doChat(params, merged)
-  }
-
-  stream(params: ChatParams, options?: CallOptions): StreamResult {
-    // 1. 合并参数
-    // 2. 创建 abort controller
-    // 3. 启动流 + normalizer + accumulator
-    // 4. 返回 { stream, final, abort }
-  }
-
-  /** 合并 defaultParams 与 callOptions */
-  private mergeParams(override?: ModelParams): ModelParams { ... }
+  protected mergeParams(override?: ModelParams): ModelParams
+  protected parseHttpError(response: Response): Promise<ProviderError>
+  protected classifyHttpError(context: HttpErrorContext): ProviderErrorDescriptor
+  protected parseJsonResponse(response: Response, signal?: AbortSignal): Promise<unknown>
+  protected createRequestSignal(...): { signal: AbortSignal; cleanup(): void }
+  protected buildStreamResult(...): StreamResult
 }
 ```
 
@@ -329,6 +342,7 @@ packages/core/src/provider/
 
 - 同一个 Provider，不同 Agent 可能用不同重试策略（开发不重试、生产指数退避、CI 快速失败）
 - 重试逻辑与所有 Provider 无关，一份中间件通用
+- Provider 保留 `Retry-After`，但由中间件决定实际等待与最大重试次数
 - 重试期间可触发事件（如 `retry_attempt`）让 UI 展示"正在重试..."
 - 测试时需要禁用重试，中间件方案只需不注册
 

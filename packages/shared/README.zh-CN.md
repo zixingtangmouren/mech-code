@@ -21,11 +21,11 @@ pnpm add @mech-code/shared
 ```ts
 import type { Message, UserContentBlock, AssistantContentBlock } from '@mech-code/shared'
 
-// 用户消息 —— 支持文本和多模态内容
-const msg: Message = { role: 'user', content: 'Hello!' }
+// 可序列化用户消息 —— content 始终使用规范内容块
+const userMessage: Message = { role: 'user', content: [{ type: 'text', text: 'Hello!' }] }
 
 // 助手消息 —— 支持文本、工具调用和思考块
-const msg: Message = {
+const assistantMessage: Message = {
   role: 'assistant',
   content: [
     { type: 'text', text: '我来读取这个文件。' },
@@ -56,8 +56,8 @@ import type { AgentEvent } from '@mech-code/shared'
 // MCP 调用
 ;'mcp_start' | 'mcp_executing' | 'mcp_result' | 'mcp_end'
 
-// 状态快照
-;('state_changed')
+// 中间件自定义事件
+;('custom')
 
 // 轮次管理
 'turn_start' | 'turn_end'
@@ -95,7 +95,11 @@ interface ToolDefinition {
 ### HITL Checkpoint 类型
 
 ```ts
-import type { SessionCheckpoint, SerializableAgentState } from '@mech-code/shared'
+import type {
+  SessionCheckpoint,
+  SerializableAgentState,
+  SerializableRuntimeState,
+} from '@mech-code/shared'
 ```
 
 ### 工具函数
