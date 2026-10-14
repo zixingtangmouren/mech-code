@@ -27,3 +27,12 @@ pnpm-debug.log*
 
 # Local Git worktrees
 .worktrees/
+
+# Agent skills（本机安装的第三方技能，可通过 skills-lock.json 重新安装）
+.agents/
+.claude/
+.hermes/
+.qwen/
+.zcode/
+skills/
+skills-lock.json
